@@ -1,61 +1,127 @@
-# Demo Devices Template
+# BTicino / Legrand MyHOME
 
-This is the user documentation of the integration. Gladys re-hosts this file
-and shows a permanent **Documentation** link to it in the Configuration screen
-(in the user's language, with English as the fallback) — it is when
-configuring that the user needs it most. Keep the short onboarding hints in
-the `section` blocks of the manifest `config_schema`; put the long
-step-by-step (screenshots, troubleshooting…) here.
+This integration connects Gladys to a **BTicino / Legrand MyHOME** installation (SCS bus) through an
+**OpenWebNet** IP gateway (MyHOMEServer1, F454, F455, MH201, MH202...), on the local network: light points,
+dimmers, roller shutters and heating zones.
 
-## What you get
+> **Unofficial**, not affiliated with BTicino or Legrand. It has **never been tested with a real
+> installation**: it was written from the OpenWebNet specification published by BTicino and the OWNd library,
+> then tested against a simulated gateway. Feedback is welcome.
 
-Six demo devices show up after installation: a weather station (real data
-from Open-Meteo), a switch, a dimmable light, a smart plug with power
-metering, a motion sensor and a camera.
+## What you need
+
+- An OpenWebNet gateway Gladys can reach (TCP port 20000 by default); give it a fixed address.
+- Its **OPEN password** if it asks for one (often `12345` out of the box; changed in MyHOME_Suite). Older
+  gateways only take a password of digits; recent ones also take letters (HMAC SHA-1 or SHA-256 challenge).
+- Depending on the gateway, the IP address of Gladys must be in the allowed addresses ("IP range") of
+  MyHOME_Suite.
 
 ## Configuration
 
-1. Open the **Configuration** tab of the integration.
-2. Set the **latitude** and **longitude** the demo weather station should
-   observe (they default to Paris), and pick your temperature unit.
-   The **refresh interval** sets how often the weather station and the
-   plug's power are read: every 5 minutes by default, every minute at most.
-3. Save: the devices appear in the **Discovery** tab, ready to be added.
+- **Address of the gateway** and **port**.
+- **OPEN password**: kept by Gladys in its database, never shown again, sent only to the gateway as the answer
+  to its challenge, never written in the logs nor in `/data`.
+- **Dimmers** (optional): the A/PL addresses of the dimmers, e.g. `13, 0215, 12#4#01`. A dimmer that reports its
+  level is recognised by itself.
+- **Light points read only** (optional): the actuators that must never be switched from Gladys (a pump, a
+  ventilation, a heater on a relay...). A light obeys voice assistants, scenes and "turn everything off": list
+  here what must never be switched that way, then delete its old feature in Gladys.
+- **Heating zones** (optional): the numbers 1 to 99. A zone that reports its temperature is recognised by itself.
+- **Thermostats**: "Central unit" (a 3550 central unit, 99 or 4 zones: the commands go through it) or
+  "Stand-alone thermostats".
+- **Allow changing the set points from Gladys**: off by default (see "Heating").
 
-The **Prefer the local connection** toggle drives the demo plug: it reports
-the channel it actually uses as a badge (local or cloud), with an orange dot
-when it runs degraded (local refused, cloud fallback).
+An entry of the lists that is not understood is ignored and counted in the status of the integration (it is not
+shown again).
 
-## Actions
+## The devices
 
-- **Test the weather provider** — performs a live request to Open-Meteo and
-  shows the current temperature and humidity under the button.
-- **Identify a device** — pick one of your devices in the list and it will
-  signal itself (the demo light "blinks" in the logs).
+Click "Scan" in the Discovery tab. The integration reads the installation (the state of every light point and
+every shutter, the level of the dimmers, the temperature, set point and mode of the zones) and offers:
 
-## Scenes
+- **Light point**: on / off; with the **brightness** on a dimmer. A point read only has a state only.
+- **Shutter**: open / close / stop; with the **position** (0 closed to 100 open) on a shutter that reports it
+  ("advanced" shutters).
+- **Heating zone**: temperature, set point, mode (off, manual heating, manual cooling, automatic).
 
-The integration adds its own cards to the scene editor (Gladys 5.1 or
-later), under the **Integrations** category:
+The id of a device is its OpenWebNet address (`light:12`, `shutter:0215`, `zone:3`; a point behind an interface,
+`12#4#01`, is `12-4-01`): it never changes.
 
-- **Motion detected** (trigger) — starts the scene when a demo motion sensor
-  sees something move. Optionally pick the sensor and what moved (person,
-  animal); left empty, any detection matches. The following actions can
-  read what moved with `{{triggerEvent.data.target}}`.
-- **Identify a device** (action) — makes the chosen device signal itself.
-  It returns whether the device could signal itself, so the following
-  actions can depend on it.
+The changes made on the installation (buttons, app, program) come through the event session of the gateway. The
+whole installation is read again every 10 minutes, never twice within a minute (restart, reconnection and button
+included). A value older than 2 hours is not published any more.
 
-## Dashboard
+## The commands
 
-Add the **Demo status** widget to a dashboard: it shows the live
-temperature of the weather station and the power of the office plug, the
-connection the plug currently uses (orange when degraded) and the observed
-location. Its **Identify the light** button makes the demo light signal
-itself.
+The integration opens **one command session at a time**, one request at a time. Each command is written within
+2.5 s or not at all, then the device is read back: Gladys gets its answer within 3.3 s:
 
-## Troubleshooting
+- **confirmed**: the read back shows the value asked;
+- **not sent** (nothing left): the gateway does not answer, was busy for too long, too many commands wait, or a
+  stop of the same device came after it;
+- **refused by the gateway** (NACK): nothing was done;
+- **sent, without confirmation**: it left, but the read back does not show the value yet; the device is read
+  again 5 s and 20 s later.
 
-The integration logs everything it does: check the integration logs from the
-Gladys UI (or `docker logs` on the host) with `LOG_LEVEL=debug` for the full
-detail.
+Before the first command of a session, the MAC address of the gateway is read: another gateway at the same
+address stops the commands until "Test the connection" is clicked.
+
+### The light off, the shutter stop, the heating off
+
+Switching a light off (or a dimmer to 0), stopping a shutter and switching a heating zone off go before
+everything else: they depend on no option, no read before, nor on the MAC address read. A read the gateway
+leaves unanswered for 1 s is cut for them; the commands of the same device still waiting are cancelled (nothing
+asked before a stop leaves after it).
+
+When they cannot leave, they are tried again every 250 ms for 3.3 s, then **kept in `/data`** and sent again as
+soon as the gateway answers (after a restart too), 3 times at most and for 10 minutes at most. A stop kept for
+later is dropped when a newer command of the same device left, or when the device changed on the installation
+meanwhile (a button, the app): it never stops a movement started afterwards by someone else. An off or a stop
+that the read back contradicts (the light still on, the shutter still moving) is sent once more, within the
+3.3 s.
+
+They are refused only in these cases:
+
+- the integration has no address of the gateway yet;
+- the connection is stopped: password refused, a gateway that asks for a missing password or only takes digits,
+  a gateway that did not prove it knows the password, another gateway at this address (a refused password is
+  never sent again by itself);
+- the point is read only in the configuration;
+- the value asked is not valid;
+- the gateway answers NACK to every try for 3.3 s.
+
+### Heating
+
+Changing the set point of a zone (5 to 40 °C, by half degrees) or putting it back to **automatic** (the program
+of the central unit) is **off by default**. Once allowed, the option is checked again when asked, after the read
+of the zone and right before the write; the zone is read just before (when it does not answer, nothing is sent);
+a set point equal to the one read is not written again. These commands are refused while the zone is being
+switched off. "Heating" and "Cooling" are not chosen in the mode: set a set point. A stand-alone thermostat has
+no "Automatic".
+
+**Switching a zone off** (mode "Off") never depends on the option (its only refusals are listed above).
+
+## The password
+
+- A refused password stops the connection: no new try until the password changes or "Test the connection" is
+  clicked. Two sessions closed by the gateway right after the password count as a refusal. The refusal is kept
+  in `/data` as an 8-bit salted mark (never the password): a restart does not send the same password again.
+- With the HMAC challenge, the gateway must prove it knows the password; otherwise the connection stops.
+
+## Status and failures
+
+The status of the integration says "Connected" only when the event session is open and the gateway answered a
+read. A gateway that does not answer is tried again after 10 s, 30 s, 1 min, 2 min, then every 5 min. When
+`/data` cannot be read, it is never overwritten and it is read again every 10 s.
+
+## Limits
+
+- No scenarios (CEN, WHO 15/25), energy (WHO 18), alarm, locks or gates in v1.
+- An "advanced" shutter whose position is unknown has open / close / stop only until it reports its position.
+- A gateway has a limited number of sessions: the integration normally keeps two (events and commands); the
+  command session is closed after 20 s without a request.
+
+## Source
+
+The code is at <https://github.com/LM1LC3N7/gladys-bticino-myhome> (Apache-2.0). It ports part of OWNd
+(OpenWebNet-HA, Apache-2.0 since 2026-09-29) to JavaScript, see `THIRD_PARTY_NOTICES.md`.

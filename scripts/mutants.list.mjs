@@ -1,0 +1,196 @@
+// -----------------------------------------------------------------------------
+// The mutants of the guards: run by scripts/mutants.mjs, one at a time; each
+// must make a test fail, never hang one.
+// -----------------------------------------------------------------------------
+const C = 'src/constants.js',
+  A = 'src/app.js',
+  G = 'src/gateway.js',
+  S = 'src/own/session.js',
+  F = 'src/own/frames.js',
+  K = 'src/config.js',
+  D = 'src/store.js';
+export default [
+  ['c1 sendBy 2500->25000', C, 'sendBy: 2500,', 'sendBy: 25000,'],
+  ['c2 protectiveRetry 250->2500', C, 'protectiveRetry: 250,', 'protectiveRetry: 2500,'],
+  ['c3 protectiveBudget 3300->330', C, 'protectiveBudget: 3300,', 'protectiveBudget: 330,'],
+  ['c4 protectiveTries 3->30', C, 'protectiveTries: 3,', 'protectiveTries: 30,'],
+  [
+    'c5 protectiveKeep 10min->1000min',
+    C,
+    'protectiveKeep: 10 * MINUTE,',
+    'protectiveKeep: 1000 * MINUTE,',
+  ],
+  ['c6 readGap 1min->0', C, 'readGap: MINUTE,', 'readGap: 0,'],
+  ['c7 fullRead 10min->1min', C, 'fullRead: 10 * MINUTE,', 'fullRead: MINUTE,'],
+  ['c8 stuckRead 1s->100s', C, 'stuckRead: SECOND,', 'stuckRead: 100 * SECOND,'],
+  ['c9 maxSetpoint 40->400', C, 'maxSetpoint: 40,', 'maxSetpoint: 400,'],
+  ['c10 minSetpoint 5->-50', C, 'minSetpoint: 5,', 'minSetpoint: -50,'],
+  ['c11 answerFrames 256->25600', C, 'answerFrames: 256,', 'answerFrames: 25600,'],
+  ['c12 stale 2h->2000h', C, 'stale: 2 * 60 * MINUTE,', 'stale: 2000 * 60 * MINUTE,'],
+  ['c13 authDrops 2->20', C, 'authDrops: 2,', 'authDrops: 20,'],
+  ['c14 frameBytes 256->25600', C, 'frameBytes: 256,', 'frameBytes: 25600,'],
+  // a1 (the option checked when asked) and a11 (the zone being switched off,
+  // checked when asked) are equivalent: both are checked again in the turn
+  // of the zone, before any frame; kept early to spare the read. g3 (the
+  // deadline checked again after the session opened) is equivalent when the
+  // session is already open, and the opening is bounded by the deadline too.
+  [
+    'a2 option not checked before the write',
+    A,
+    '      check: () => this.allowed() && !this.stopping(zone),',
+    '      check: () => !this.stopping(zone),',
+  ],
+  [
+    'a3 protective blocked by the identity',
+    A,
+    "    this.logger.info(`PROTECTIVE from Gladys: ${word(what, 'en')}`);",
+    "    await this.checkIdentity(asked);\n    this.logger.info(`PROTECTIVE from Gladys: ${word(what, 'en')}`);",
+  ],
+  [
+    'a4 protective not kept at the click',
+    A,
+    '    this.keepPending({ kind, target, frame, at: wall, tries: 0 });\n    const until',
+    '    const until',
+  ],
+  [
+    'a5 no resend of a contradicted protective',
+    A,
+    'if (!resent && updates?.some(contradicted)',
+    'if (false && updates?.some(contradicted)',
+  ],
+  [
+    'a6 spontaneous event does not drop the pending',
+    A,
+    "      if (source === 'event') this.spontaneous(`shutter:${point}`);",
+    '',
+  ],
+  [
+    'a7 a newer command does not drop the pending',
+    A,
+    '            written = true;\n            this.noteWritten(target);',
+    '            written = true;',
+  ],
+  [
+    'a8 refused password not remembered',
+    A,
+    "    if (err.kind === 'refused') {\n      const salt",
+    '    if (false) {\n      const salt',
+  ],
+  [
+    'a9 refused mark not checked at start',
+    A,
+    'if (refused && passwordMark(next.password, refused.salt) === refused.mark) {',
+    'if (false) {',
+  ],
+  [
+    'a10 the zone not read before',
+    A,
+    '      if (value === undefined) throw this.refused(T.zoneUnknown);',
+    '',
+  ],
+  [
+    'a12 another MAC accepted',
+    A,
+    'if (this.memory.mac && this.memory.mac !== mac) {',
+    'if (false) {',
+  ],
+  [
+    'a13 readOnly ignored',
+    A,
+    "if (key === 'readonly' || this.config.readOnly.includes(point)) {",
+    "if (key === 'readonly') {",
+  ],
+  ['a14 tries not counted', A, '        entry.tries += 1;\n', ''],
+  [
+    'a15 late command said sent',
+    A,
+    '    if (!written) throw this.refused(T.tooLate);\n    // On its way',
+    '    // On its way',
+  ],
+  [
+    'a16 unconfirmed said confirmed',
+    A,
+    '      if (updates?.some(confirm)) {\n        this.logger.info(`Command confirmed',
+    '      if (true) {\n        this.logger.info(`Command confirmed',
+  ],
+  [
+    'a17 /data broken overwritten',
+    A,
+    "    if (this.memoryState !== 'ok') return Promise.resolve(false);",
+    '',
+  ],
+  [
+    'a18 getConfig failure not retried',
+    A,
+    '        this.configTimer = undefined;\n        this.connected();',
+    '        this.configTimer = undefined;',
+  ],
+  [
+    'g1 protective does not cancel the waiting commands',
+    G,
+    "        this.cancel(job.target, 'replaced');",
+    '',
+  ],
+  [
+    'g2 no cut of a silent request',
+    G,
+    '        session.destroy();\n      }\n    }, 100);',
+    '      }\n    }, 100);',
+  ],
+  [
+    'g4 event link retries after a refusal',
+    G,
+    '    } else if (STOPPING.has(err.kind)) {\n      this.refuse(err);\n      return;\n    }',
+    '    }',
+  ],
+  ['g5 queue unbounded', G, '      if (queue.length >= cap) {', '      if (false) {'],
+  [
+    's1 no check of the gateway proof',
+    S,
+    'if (!sameDigits(answer.nonce, hmacExpected(algorithm, this.password, ra, rb))) {',
+    'if (false) {',
+  ],
+  [
+    's2 password sent without a password asked',
+    S,
+    '      if (!this.password) {\n        this.fatal(',
+    '      if (false) {\n        this.fatal(',
+  ],
+  [
+    's3 letters sent to a legacy gateway',
+    S,
+    'if (!/^[0-9]{1,10}$/.test(this.password)) {',
+    'if (false) {',
+  ],
+  [
+    'f1 a group is a point',
+    F,
+    '    return a === 0 ? pl >= 1 && pl <= 9 : pl >= 1 && pl <= 9;',
+    '    return true;',
+  ],
+  [
+    'f2 a level over 100 accepted',
+    F,
+    'if (raw === undefined || raw < 100 || raw > 200) return undefined;',
+    'if (raw === undefined) return undefined;',
+  ],
+  [
+    'f3 the central zone is a probe',
+    F,
+    "    if (String(message.where).startsWith('#')) return undefined;",
+    '',
+  ],
+  [
+    'k1 multicast accepted',
+    K,
+    "  if (/^2(2[4-9]|3[0-9])\\./.test(host) || /^ff[0-9a-f]{2}:/i.test(host)) return { host: '' };",
+    '',
+  ],
+  [
+    'k2 option from a string',
+    K,
+    'allowThermostat: raw?.allow_thermostat === true,',
+    'allowThermostat: Boolean(raw?.allow_thermostat),',
+  ],
+  ['d1 future dates trusted', D, 'value > 0 && value <= now ? value : 0', 'value > 0 ? value : 0'],
+];

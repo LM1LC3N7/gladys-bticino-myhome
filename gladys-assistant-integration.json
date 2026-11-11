@@ -1,177 +1,234 @@
 {
   "manifest_version": 1,
   "type": "device",
-  "name": "Demo Devices Template",
+  "name": "BTicino MyHOME",
   "description": {
-    "en": "Starter template showing sensors, a switch, a dimmable light and a smart plug.",
-    "fr": "Template de démarrage : capteurs, interrupteur, lampe variable et prise connectée."
+    "en": "BTicino / Legrand MyHOME through an OpenWebNet gateway: lights, shutters, heating. Unofficial.",
+    "fr": "BTicino / Legrand MyHOME par passerelle OpenWebNet : lumières, volets, chauffage. Non officiel."
   },
-  "version": "1.0.0",
-  "docker_image": "ghcr.io/gladysassistant/integration-template-js:1.0.0",
+  "version": "0.1.0",
+  "docker_image": "ghcr.io/lm1lc3n7/gladys-bticino-myhome:0.1.0",
   "gladys_version": ">=5.1.0",
-  "cover_image": "https://raw.githubusercontent.com/GladysAssistant/integration-template-js/master/cover.png",
-  "categories": ["lighting", "security", "environment"],
-  "transports": ["local", "cloud"],
+  "cover_image": "https://raw.githubusercontent.com/LM1LC3N7/gladys-bticino-myhome/main/cover.png",
+  "categories": ["lighting", "climate"],
+  "transports": ["local"],
   "config_schema": [
     {
       "key": "intro",
       "type": "section",
-      "label": { "en": "Getting started", "fr": "Pour commencer" },
+      "label": {
+        "en": "Your MyHOME installation",
+        "fr": "Votre installation MyHOME"
+      },
       "description": {
-        "en": "The demo weather station reads real data from the free Open-Meteo API: pick the coordinates to observe. No account, no API key.",
-        "fr": "La station météo de démonstration lit de vraies données via l'API gratuite Open-Meteo : choisissez les coordonnées à observer. Pas de compte, pas de clé d'API."
+        "en": "For BTicino / Legrand MyHOME (SCS bus) installations with an OpenWebNet IP gateway (MyHOMEServer1, F454, F455, MH201, MH202...), on the local network. Light points, dimmers and shutters are found by reading the installation; heating zones are listed below. A light off, a shutter stop and a heating zone off are always sent; changing a set point is off by default. One command session at a time. Never tested with a real installation. Unofficial, not affiliated with BTicino or Legrand.",
+        "fr": "Pour les installations BTicino / Legrand MyHOME (bus SCS) avec une passerelle IP OpenWebNet (MyHOMEServer1, F454, F455, MH201, MH202…), sur le réseau local. Les points lumineux, variateurs et volets sont trouvés en lisant l’installation ; les zones de chauffage se listent ci-dessous. Une extinction, un arrêt de volet et un arrêt du chauffage partent toujours ; changer une consigne est désactivé par défaut. Une seule session de commande à la fois. Jamais testé avec une vraie installation. Non officiel, sans lien avec BTicino ni Legrand."
       },
       "links": [
         {
-          "url": "https://open-meteo.com/en/docs",
-          "label": { "en": "Open-Meteo documentation", "fr": "Documentation Open-Meteo" }
+          "url": "https://github.com/LM1LC3N7/gladys-bticino-myhome/blob/main/docs/fr.md",
+          "label": {
+            "en": "Guide (French)",
+            "fr": "Guide (français)"
+          }
+        },
+        {
+          "url": "https://github.com/LM1LC3N7/gladys-bticino-myhome/blob/main/docs/en.md",
+          "label": {
+            "en": "Guide (English)",
+            "fr": "Guide (anglais)"
+          }
         }
       ]
     },
     {
-      "key": "latitude",
-      "type": "number",
-      "label": { "en": "Latitude", "fr": "Latitude" },
-      "description": {
-        "en": "Latitude used for the demo weather sensor.",
-        "fr": "Latitude utilisée par le capteur météo de démonstration."
+      "key": "host",
+      "type": "string",
+      "label": {
+        "en": "Address of the gateway",
+        "fr": "Adresse de la passerelle"
       },
-      "placeholder": { "en": "e.g. 48.8566", "fr": "ex. 48.8566" },
-      "required": true,
-      "default": 48.8566,
-      "min": -90,
-      "max": 90
+      "description": {
+        "en": "The IP address (or name) of the OpenWebNet gateway; give it a fixed address in your router.",
+        "fr": "L’adresse IP (ou le nom) de la passerelle OpenWebNet ; donnez-lui une adresse fixe dans votre box."
+      },
+      "placeholder": {
+        "en": "192.168.1.35",
+        "fr": "192.168.1.35"
+      },
+      "required": true
     },
     {
-      "key": "longitude",
+      "key": "port",
       "type": "number",
-      "label": { "en": "Longitude", "fr": "Longitude" },
-      "description": {
-        "en": "Longitude used for the demo weather sensor.",
-        "fr": "Longitude utilisée par le capteur météo de démonstration."
+      "label": {
+        "en": "Port",
+        "fr": "Port"
       },
-      "placeholder": { "en": "e.g. 2.3522", "fr": "ex. 2.3522" },
-      "required": true,
-      "default": 2.3522,
-      "min": -180,
-      "max": 180
-    },
-    {
-      "key": "unit",
-      "type": "select",
-      "label": { "en": "Temperature unit", "fr": "Unité de température" },
+      "description": {
+        "en": "20000 unless your gateway uses another one.",
+        "fr": "20000 sauf si votre passerelle en utilise un autre."
+      },
       "required": false,
-      "default": "celsius",
+      "default": 20000,
+      "min": 1,
+      "max": 65535
+    },
+    {
+      "key": "password",
+      "type": "secret",
+      "label": {
+        "en": "OPEN password",
+        "fr": "Mot de passe OPEN"
+      },
+      "description": {
+        "en": "The OPEN password of the gateway (12345 out of the box on many models; set in MyHOME_Suite), if it asks for one. Kept by Gladys in its database, never shown again, sent only to the gateway (as the answer to its challenge, never as such), never written in the logs.",
+        "fr": "Le mot de passe OPEN de la passerelle (12345 d’usine sur beaucoup de modèles ; réglé dans MyHOME_Suite), si elle en demande un. Gardé par Gladys dans sa base, jamais réaffiché, envoyé seulement à la passerelle (en réponse à son défi, jamais tel quel), jamais écrit dans les journaux."
+      },
+      "required": false
+    },
+    {
+      "key": "dimmers",
+      "type": "string",
+      "label": {
+        "en": "Dimmers",
+        "fr": "Variateurs"
+      },
+      "description": {
+        "en": "Optional: the addresses (A/PL, as in MyHOME_Suite) of the dimmers, e.g. \"13, 0215, 12#4#01\". A dimmer that reports a level is found by itself.",
+        "fr": "Facultatif : les adresses (A/PL, comme dans MyHOME_Suite) des variateurs, par ex. « 13, 0215, 12#4#01 ». Un variateur qui donne son niveau est trouvé tout seul."
+      },
+      "placeholder": {
+        "en": "13, 0215",
+        "fr": "13, 0215"
+      },
+      "required": false
+    },
+    {
+      "key": "read_only",
+      "type": "string",
+      "label": {
+        "en": "Light points read only",
+        "fr": "Points lumineux en lecture seule"
+      },
+      "description": {
+        "en": "Optional: the addresses of the lighting actuators that must never be switched from Gladys (a pump, a ventilation, a heater on a relay...). A light obeys Google, Alexa, the scenes and \"turn everything off\": list them here, then delete their old feature in Gladys.",
+        "fr": "Facultatif : les adresses des actionneurs d’éclairage à ne jamais commander depuis Gladys (pompe, VMC, radiateur sur relais…). Une lumière obéit à Google, Alexa, aux scènes et à « tout éteindre » : listez-les ici, puis supprimez leur ancienne fonctionnalité dans Gladys."
+      },
+      "placeholder": {
+        "en": "17, 0312",
+        "fr": "17, 0312"
+      },
+      "required": false
+    },
+    {
+      "key": "zones",
+      "type": "string",
+      "label": {
+        "en": "Heating zones",
+        "fr": "Zones de chauffage"
+      },
+      "description": {
+        "en": "Optional: the numbers (1 to 99) of the heating zones, e.g. \"1, 2, 5\". A zone that reports its temperature is found by itself.",
+        "fr": "Facultatif : les numéros (1 à 99) des zones de chauffage, par ex. « 1, 2, 5 ». Une zone qui donne sa température est trouvée toute seule."
+      },
+      "placeholder": {
+        "en": "1, 2",
+        "fr": "1, 2"
+      },
+      "required": false
+    },
+    {
+      "key": "heating_plant",
+      "type": "select",
+      "label": {
+        "en": "Thermostats",
+        "fr": "Thermostats"
+      },
+      "description": {
+        "en": "With a central unit (3550, 99 or 4 zones), the commands go to the zone through it; a stand-alone thermostat takes them directly (and has no program: no \"Automatic\").",
+        "fr": "Avec une centrale (3550, 99 ou 4 zones), les commandes vont à la zone par elle ; un thermostat autonome les prend directement (et n’a pas de programme : pas d’« Automatique »)."
+      },
+      "required": false,
+      "default": "central",
       "options": [
-        { "value": "celsius", "label": { "en": "Celsius", "fr": "Celsius" } },
-        { "value": "fahrenheit", "label": { "en": "Fahrenheit", "fr": "Fahrenheit" } }
+        {
+          "value": "central",
+          "label": {
+            "en": "Central unit",
+            "fr": "Centrale"
+          }
+        },
+        {
+          "value": "standalone",
+          "label": {
+            "en": "Stand-alone thermostats",
+            "fr": "Thermostats autonomes"
+          }
+        }
       ]
     },
     {
-      "key": "poll_frequency",
-      "type": "number",
-      "label": { "en": "Refresh interval (s)", "fr": "Intervalle de rafraîchissement (s)" },
+      "key": "safety",
+      "type": "section",
+      "label": {
+        "en": "Heating",
+        "fr": "Chauffage"
+      },
       "description": {
-        "en": "How often sensors are polled, in seconds (one minute minimum).",
-        "fr": "Fréquence d'interrogation des capteurs, en secondes (une minute minimum)."
+        "en": "Changing the set point of a zone, or putting it back on the program of the central unit, drives the heating: it is off by default. Once allowed, every Gladys user, every scene and the Gladys app can do it (5 to 40 °C). The zone is read just before each change. Switching a zone off is always possible, allowed or not.",
+        "fr": "Changer la consigne d’une zone, ou la remettre sur le programme de la centrale, pilote le chauffage : c’est désactivé par défaut. Une fois autorisé, tout utilisateur de Gladys, toute scène et l’application Gladys peuvent le faire (5 à 40 °C). La zone est relue juste avant chaque changement. Arrêter une zone reste toujours possible, autorisé ou non."
+      }
+    },
+    {
+      "key": "allow_thermostat",
+      "type": "boolean",
+      "label": {
+        "en": "Allow changing the set points from Gladys",
+        "fr": "Autoriser le réglage des consignes depuis Gladys"
       },
       "required": false,
-      "default": 300,
-      "min": 60,
-      "max": 3600
+      "default": false
+    },
+    {
+      "key": "language",
+      "type": "select",
+      "label": {
+        "en": "Language of the names",
+        "fr": "Langue des noms"
+      },
+      "description": {
+        "en": "Used for the names of the devices and features found from now on.",
+        "fr": "Sert aux noms des appareils et fonctionnalités trouvés désormais."
+      },
+      "required": false,
+      "default": "fr",
+      "options": [
+        {
+          "value": "fr",
+          "label": {
+            "en": "French",
+            "fr": "Français"
+          }
+        },
+        {
+          "value": "en",
+          "label": {
+            "en": "English",
+            "fr": "Anglais"
+          }
+        }
+      ]
     }
   ],
   "actions": [
     {
-      "key": "test_weather",
-      "label": { "en": "Test the weather provider", "fr": "Tester le fournisseur météo" },
+      "key": "test_connection",
+      "label": {
+        "en": "Test the connection",
+        "fr": "Tester la connexion"
+      },
       "timeout_seconds": 30
-    },
-    {
-      "key": "identify",
-      "label": { "en": "Identify a device", "fr": "Identifier un appareil" },
-      "fields": [
-        {
-          "key": "device",
-          "type": "select",
-          "source": "devices",
-          "label": { "en": "Device", "fr": "Appareil" },
-          "required": true
-        }
-      ]
-    }
-  ],
-  "scene_triggers": [
-    {
-      "key": "motion_detected",
-      "label": { "en": "Motion detected", "fr": "Mouvement détecté" },
-      "description": {
-        "en": "A demo motion sensor saw a person or an animal move.",
-        "fr": "Un détecteur de démonstration a vu bouger une personne ou un animal."
-      },
-      "fields": [
-        {
-          "key": "device",
-          "type": "select",
-          "source": "devices",
-          "label": { "en": "Sensor", "fr": "Détecteur" }
-        },
-        {
-          "key": "target",
-          "type": "multi_select",
-          "label": { "en": "What moved", "fr": "Ce qui a bougé" },
-          "options": [
-            { "value": "person", "label": { "en": "Person", "fr": "Personne" } },
-            { "value": "animal", "label": { "en": "Animal", "fr": "Animal" } }
-          ]
-        }
-      ],
-      "variables": [
-        {
-          "key": "target",
-          "type": "string",
-          "label": { "en": "What moved", "fr": "Ce qui a bougé" }
-        }
-      ]
-    }
-  ],
-  "scene_actions": [
-    {
-      "key": "identify_device",
-      "label": { "en": "Identify a device", "fr": "Identifier un appareil" },
-      "description": {
-        "en": "Make a device signal itself (the demo light blinks).",
-        "fr": "Fait se signaler un appareil (la lampe de démonstration clignote)."
-      },
-      "timeout_seconds": 15,
-      "fields": [
-        {
-          "key": "device",
-          "type": "select",
-          "source": "devices",
-          "label": { "en": "Device", "fr": "Appareil" },
-          "required": true
-        }
-      ],
-      "outputs": [
-        {
-          "key": "signalled",
-          "type": "boolean",
-          "label": { "en": "Device signalled", "fr": "Appareil signalé" }
-        }
-      ]
-    }
-  ],
-  "widgets": [
-    {
-      "key": "demo_status",
-      "label": { "en": "Demo status", "fr": "État de la démo" },
-      "description": {
-        "en": "Live temperature and plug power, plug connection and observed location.",
-        "fr": "Température et puissance en direct, connexion de la prise, position observée."
-      },
-      "icon": "activity",
-      "action_timeout_seconds": 15
     }
   ]
 }

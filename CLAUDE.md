@@ -1,76 +1,55 @@
 # CLAUDE.md
 
-Project rules for coding assistants (Claude Code reads this file) and for human
-contributors.
+Project rules for coding assistants and contributors. Read
+`~/code/integrations/CLAUDE.md` and `_lots/fiche.md` first when working from
+the integrations workspace.
 
 ## What this is
 
-A Gladys Assistant **external integration**: a Node.js service (Node 22+, ESM,
-no build step) that runs in its own sandboxed Docker container and talks to
-Gladys through
-[`@gladysassistant/integration-sdk`](https://github.com/GladysAssistant/integration-sdk-js),
-its only runtime dependency. It started from the official JavaScript template.
+A Gladys Assistant external integration (Node.js 22+, ESM, no build step, one
+runtime dependency: `@gladysassistant/integration-sdk`) for BTicino / Legrand
+MyHOME through an OpenWebNet gateway on the local network.
 
 ## Commands
 
 ```bash
 npm install
-npm test                                  # node --test, the built-in runner
-node --test test/devices.test.js          # one file
-node --test --test-name-pattern "plug"    # tests whose name matches
-npm run lint                              # ESLint
-npm run format:check                      # Prettier, as the CI runs it
-npm run format                            # Prettier, fix in place
-npx github:GladysAssistant/integration-store .   # store admission checks
+npm test                 # node --test --test-timeout=60000 (every test/*.test.js)
+npm run lint
+npm run format:check
+npm run cover            # cover.png
+node scripts/mutants.mjs # mutants of the guards, under memcap
 ```
 
-The CI (`.github/workflows/ci.yml`) runs `format:check`, `lint` and `test` on
-Node 22 and 24, and builds the Docker image: run the three commands before
-pushing.
+From the integrations workspace: `gi test`, `gi ci`.
 
 ## Architecture
 
 ```
-index.js                          SDK wiring only: handlers registered before connect()
-src/devices/index.js              registry of the device blueprints + dispatch helpers
-src/devices/<type>.js             one device type per file (buildDevice, onPoll, onSetValue...)
-src/scenes.js                     scene action handlers (manifest `scene_actions`)
-src/widgets.js                    dashboard widget handlers (manifest `widgets`)
-src/config.js                     DEFAULT_CONFIG (mirrors the manifest defaults) + normalization
-src/weather.js                    example driver (Open-Meteo)
-gladys-assistant-integration.json manifest: name, config_schema, actions, image...
-docs/en.md, docs/fr.md            user documentation, re-hosted by Gladys (mandatory)
-test/                             node --test, against the SDK's fake Gladys (integration-sdk/testing)
-.github/scripts/release.mjs       release helpers (manifest bump, changelog), tested in test/
+index.js              SDK wiring
+src/handlers.js       the SDK handlers (shared with the tests)
+src/app.js            lifecycle, reads, commands, protectives, thermostats
+src/gateway.js        CommandLink (one session, queues, cut) and EventLink
+src/own/session.js    one OpenWebNet session: negotiation, one request at a time
+src/own/auth.js       OPEN password (legacy, HMAC), from OWNd
+src/own/frames.js     reader, parser, decoder, frames sent, from OWNd
+src/devices.js        model -> Gladys devices and states (pure)
+src/publisher.js      states under the 300/min limit
+src/store.js          /data (bounded, never overwritten when unreadable)
+src/config.js, src/constants.js, src/i18n.js
+test/helpers/         in-memory gateway, clocks, app setup
 ```
 
 ## Rules
 
-- **External ids are forever.** Build them with
-  `gladys.externalIds(type, platformId)`, `platformId` being the unique id the
-  platform gives the device (serial, cloud id, MAC), never a label. Gladys keys
-  devices, their history, scenes and dashboards on them: changing one creates a
-  new device and orphans the old one. The same goes for every key users store:
-  manifest `config_schema`, `actions`, widget and scene keys, feature keys.
-- **The container rootfs is read-only.** Write only under `/data`, the one
-  writable volume. Never log tokens, passwords or API keys.
-- **Versions belong to the Release workflow** (Actions → Release). Never edit
-  `version` in `package.json` or in the manifest, nor the `docker_image` tag,
-  by hand — except on the README's hand-pushed tag path, which bumps all three
-  together before tagging. `test/manifest.test.js` checks they agree.
-- **Changelog.** Every user-visible change adds a line under `## [Unreleased]`
-  in `CHANGELOG.md` (`### Added`, `Changed`, `Fixed`, `Removed`, `Security`).
-  Never write a version heading: the Release workflow moves the section, and it
-  becomes the notes of the GitHub Release.
-- **Manifest.** Texts are multi-language objects `{ "en": ..., "fr": ... }`:
-  `label`, `description` and `placeholder` alike, never a plain string. The
-  catalog `description` holds 10 to 100 characters per language. A field the
-  older cores do not know needs a higher `gladys_version` minimum
-  (`categories`: 4.86.0; `widgets`, `scene_triggers`, `scene_actions`,
-  `type: "provider"`: 5.1.0). `test/manifest.test.js` ties the manifest to the
-  code (defaults, action, scene and widget handlers): change both sides
-  together.
-- **User-facing text** is bilingual (English and French): action messages,
-  manifest texts, and `docs/en.md` / `docs/fr.md`, kept in sync.
-- **Style.** Prettier formats, ESLint catches mistakes. Comments explain why,
-  in English. Tests never touch the network.
+- External ids are forever: `ext:<sel>:light:<A/PL>`, `shutter:<A/PL>`,
+  `zone:<n>` (`#` -> `-`); feature keys `binary`, `brightness`, `readonly`,
+  `state`, `position`, `temperature`, `target`, `mode`.
+- A protective (light off, shutter stop, zone off) is never blocked by an
+  option; every change near it needs a test that fails without it
+  (`test/stop.test.js`), on the virtual clock.
+- Thermostat writes stay off by default, checked at every step.
+- The password is never logged, never in /data, never in a status.
+- Port only OWNd code from after 2026-09-29 (Apache-2.0).
+- Changelog under `## [Unreleased]`; user texts in English and French; docs and
+  i18n kept true to the code.
