@@ -62,7 +62,14 @@ export const SHUTTER_FEATURES = {
 const options = (entries, language) =>
   entries.map(([value, label]) => ({ value, label: word(label, language) }));
 
-export function zoneFeatures(language) {
+/**
+ * The features of a zone. The mode offers what can be chosen: off, and the
+ * program of the central unit (none on a stand-alone thermostat); heating
+ * and cooling are reported, set by a set point.
+ */
+export function zoneFeatures(language, plant = 'central') {
+  const choices = [[THERMOSTAT_MODE.OFF, MODE_LABELS.off]];
+  if (plant !== 'standalone') choices.push([THERMOSTAT_MODE.AUTO, MODE_LABELS.auto]);
   return {
     temperature: reading(C.TEMPERATURE_SENSOR, T.SENSOR.DECIMAL, {
       unit: U.CELSIUS,
@@ -78,15 +85,7 @@ export function zoneFeatures(language) {
       min: 0,
       max: 3,
       keep_history: false,
-      supported_options: options(
-        [
-          [THERMOSTAT_MODE.OFF, MODE_LABELS.off],
-          [THERMOSTAT_MODE.HEATING, MODE_LABELS.heating],
-          [THERMOSTAT_MODE.COOLING, MODE_LABELS.cooling],
-          [THERMOSTAT_MODE.AUTO, MODE_LABELS.auto],
-        ],
-        language,
-      ),
+      supported_options: options(choices, language),
     }),
   };
 }
@@ -197,7 +196,7 @@ export function buildDevices(gladys, config, model, created = gladys.devices) {
       })),
     });
   }
-  const features = zoneFeatures(language);
+  const features = zoneFeatures(language, config.plant);
   for (const zone of [...model.zoneNumbers].sort((a, b) => a - b)) {
     const ids = gladys.externalIds('zone', String(zone));
     devices.push({

@@ -92,6 +92,8 @@ export function createGateway({
     silentNegotiation: false,
     /** No event pushed on the event sessions (a quiet bus). */
     quiet: false,
+    /** Answers of several frames: one every `trickle` ms. */
+    trickle: 0,
     /** Stops (WHO 2 WHAT 0) not applied: the shutter keeps moving. */
     ignoreStop: false,
     /** Closes the session right after the password, before answering. */
@@ -165,6 +167,13 @@ export function createGateway({
         socket.send('*#*0##');
         return;
       }
+      if (gateway.trickle > 0 && answer.length > 1) {
+        // One frame every `trickle` ms, then the ACK: never silent, but slow.
+        [...answer, '*#*1##'].forEach((f, i) =>
+          gateway.clock.timers.setTimeout(() => socket.send(f), gateway.trickle * (i + 1)),
+        );
+        return;
+      }
       socket.send(`${answer.join('')}*#*1##`);
     },
   };
@@ -189,6 +198,7 @@ export function createGateway({
     }
     if (socket.state === 'nonce') {
       if (gateway.dropAfterPassword) return socket.destroy();
+      if (gateway.silentAfterPassword) return undefined;
       const ok = frame === `*#${openPassword(gateway.password, NONCE)}##`;
       socket.state = ok ? 'open' : 'refused';
       return socket.send(ok ? '*#*1##' : '*#*0##');
@@ -201,6 +211,7 @@ export function createGateway({
     }
     if (socket.state === 'ra') {
       if (gateway.dropAfterPassword) return socket.destroy();
+      if (gateway.silentAfterPassword) return undefined;
       const match = /^\*#([0-9]+)\*([0-9]+)##$/.exec(frame);
       if (!match || match[2] !== hmacAnswer(algorithm, gateway.password, RA, match[1])) {
         socket.state = 'refused';

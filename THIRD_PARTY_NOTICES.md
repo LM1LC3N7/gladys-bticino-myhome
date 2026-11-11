@@ -12,7 +12,7 @@ that pull request). PyPI may still show the older licence on the OWNd 0.7.x
 releases: this port does not come from them.
 
 **Only code from after the relicensing was read and ported**: the repository at
-commit `1cb2dc110477ca6762f31ffb3883012447798db7` (2026-11-09), whose `LICENSE`
+commit `1cb2dc110477ca6762f31ffb3883012447798db7` (2026-11-10), whose `LICENSE`
 is the Apache License 2.0. No code of an LGPL release was used.
 
 What was ported (rewritten in JavaScript, then changed as listed in each file):
@@ -26,7 +26,11 @@ What was ported (rewritten in JavaScript, then changed as listed in each file):
 - `OWNd/message/base.py`, `lighting.py`, `automation.py`, `heating.py`: the
   signalling frames, the point-to-point address rule (`is_apl_address`), the
   coarse dimmer table, the WHO 1 / 2 / 4 events and commands, the WHO 4
-  temperature field, the WHO 4 mode table -> `src/own/frames.js`.
+  temperature field, the WHO 4 mode table -> `src/own/frames.js`. Changed:
+  the WHO 4 mode table is read for Gladys (the automatic modes and the
+  programs are "auto", 102 / 202 / 302 are "protection"; OWNd reads them by
+  season, and 102 / 202 / 302 as "off"), the reader and the values are
+  bounded, see the head of each file.
 
 The OpenWebNet protocol itself is published by BTicino (Legrand group) on
 MyOpen (<https://developer.legrand.com>): the frames, addresses and the WHO 1,

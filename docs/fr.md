@@ -45,8 +45,8 @@ lumineux et de tous les volets, niveau des variateurs, température, consigne et
   qu’un état.
 - **Volet** : ouvrir / fermer / arrêter ; avec la **position** (0 fermé à 100 ouvert) pour un volet qui la donne
   (volets « avancés »).
-- **Zone de chauffage** : température, consigne, mode (arrêt, chauffage manuel, climatisation manuelle,
-  automatique).
+- **Zone de chauffage** : température, consigne, mode (affiché : arrêt, chauffage manuel, climatisation manuelle,
+  automatique ; au choix : arrêt et automatique).
 
 L’identifiant d’un appareil est son adresse OpenWebNet (`light:12`, `shutter:0215`, `zone:3` ; un point derrière
 une interface `12#4#01` devient `12-4-01`) : il ne change jamais.
@@ -67,7 +67,8 @@ L’intégration ouvre **une seule session de commande à la fois**, une requêt
 - **envoyée, sans confirmation** : partie, mais la relecture ne montre pas encore la valeur ; l’appareil est
   relu 5 s et 20 s plus tard.
 
-Avant la première commande d’une session, l’adresse MAC de la passerelle est lue : une autre passerelle à la
+Avant toute commande ou lecture sur une nouvelle session (après une déconnexion ou une session refermée), l’adresse
+MAC de la passerelle est lue ; les événements ne sont pris qu’une fois la MAC connue : une autre passerelle à la
 même adresse arrête les commandes jusqu’au clic sur « Tester la connexion ».
 
 ### L’extinction, l’arrêt du volet, l’arrêt du chauffage
@@ -77,22 +78,30 @@ le reste : ils ne dépendent d’aucune option, d’aucune relecture préalable,
 lecture que la passerelle laisse sans réponse depuis 1 s est coupée pour eux ; les commandes du même appareil
 encore en attente sont annulées (rien de demandé avant un arrêt ne part après lui).
 
-S’ils ne peuvent pas partir, ils sont réessayés toutes les 250 ms pendant 3,3 s, puis **gardés dans `/data`** et
-renvoyés dès que la passerelle répond (au redémarrage aussi), 3 fois au plus et pendant 10 minutes au plus. Un
-arrêt gardé est abandonné si une commande plus récente du même appareil est partie, ou si l’appareil a changé
-sur l’installation entre-temps (un bouton, l’application) : il n’arrête jamais un mouvement lancé ensuite par
-quelqu’un d’autre. Une extinction ou un arrêt que la relecture contredit (la lumière encore allumée, le volet
-qui bouge encore) est renvoyé une fois, dans les 3,3 s.
+Gladys reçoit leur réponse dans les 3,3 s, quoi que fasse la passerelle ; le travail continue ensuite. Ils sont
+**gardés dans `/data` dès le clic**, avec l’état de l’appareil à ce moment, jusqu’à ce qu’une relecture (ou un
+événement) montre l’appareil éteint ou arrêté. S’ils ne peuvent pas partir, ils sont réessayés toutes les 250 ms
+pendant 3,3 s, puis renvoyés **avant toute autre requête** dès que la passerelle répond (au redémarrage aussi),
+sans limite d’âge. Seul un envoi auquel la passerelle a répondu (ACK ou NACK) compte comme un essai : après 3
+envois répondus sans effet, ils ne sont plus renvoyés. Un envoi resté sans réponse est gardé et renvoyé. Une
+requête qui fait attendre une protectrice plus de 1,5 s est coupée, même si elle répond encore.
+
+Un arrêt gardé est abandonné si une commande plus récente du même appareil est partie, ou si l’appareil change
+sur l’installation pour un autre état que celui du clic (un nouveau mouvement, l’autre sens, une lumière
+rallumée) : il n’arrête jamais un mouvement lancé ensuite par quelqu’un d’autre. Un écho du même état ne lève
+rien. Une extinction ou un arrêt que la relecture contredit (la lumière encore allumée, le volet qui bouge
+encore) est renvoyé une fois dans les 3,3 s, puis par les relectures de suivi (5 s, 20 s).
 
 Ils sont refusés seulement dans ces cas :
 
 - l’intégration n’a pas encore d’adresse de passerelle ;
+- le mot de passe OPEN de la configuration contient des caractères qu’aucune passerelle n’accepte ;
 - la connexion est arrêtée : mot de passe refusé, passerelle qui demande un mot de passe absent ou n’acceptant qu’un
   mot de passe numérique, passerelle qui n’a pas prouvé connaître le mot de passe, autre passerelle à cette adresse (le
   mot de passe refusé n’est jamais renvoyé tout seul) ;
 - le point est en lecture seule dans la configuration ;
 - la valeur demandée n’est pas valable ;
-- la passerelle répond NACK à chaque essai pendant 3,3 s.
+- la passerelle répond NACK à chaque essai pendant 3,3 s (l’ordre reste gardé, 3 envois répondus au plus).
 
 ### Chauffage
 
@@ -100,7 +109,7 @@ Changer la consigne d’une zone (5 à 40 °C, au demi-degré) ou la remettre en
 centrale) est **désactivé par défaut**. Une fois autorisé, l’option est revérifiée à la demande, après la
 relecture de la zone et juste avant l’écriture ; la zone est relue juste avant (si elle ne répond pas, rien n’est
 envoyé) ; une consigne égale à celle relue n’est pas réécrite. Ces commandes sont refusées pendant l’arrêt de la
-zone. « Chauffage » ou « Climatisation » ne se choisissent pas dans le mode : réglez une consigne. Un thermostat
+zone. Le mode ne propose que « Arrêt » et « Automatique » : pour chauffer, réglez une consigne. Un thermostat
 autonome n’a pas d’« Automatique ».
 
 **Arrêter une zone** (mode « Arrêt ») ne dépend jamais de l’option (ses seuls refus sont listés plus haut).
@@ -111,7 +120,9 @@ autonome n’a pas d’« Automatique ».
   « Tester la connexion » n’est pas cliqué. Deux sessions fermées par la passerelle juste après le mot de passe
   comptent comme un refus. Ce refus est retenu dans `/data` par une marque de 8 bits salée (jamais le mot de
   passe) : un redémarrage ne renvoie pas le même mot de passe.
-- Avec le défi HMAC, la passerelle doit prouver qu’elle connaît le mot de passe ; sinon la connexion s’arrête.
+- Avec le défi HMAC, la passerelle doit prouver qu’elle connaît le mot de passe ; sinon la connexion s’arrête,
+  et la même marque évite qu’un redémarrage lui réponde de nouveau.
+- Une passerelle muette après le mot de passe n’est pas un refus : elle est réessayée avec les attentes habituelles.
 
 ## État et pannes
 

@@ -7,11 +7,14 @@
 // Commands, by kind:
 // - protectives (a light or a dimmer off, a shutter stop, a heating zone
 //   off): never blocked by an option, a read, the identity check or a queue;
-//   they go first, cut a read the gateway leaves silent, cancel the commands
-//   of the same target still waiting, are tried again every 250 ms within
-//   3.3 s, then kept in /data and sent again when the gateway answers (3
-//   times, 10 minutes at most). Refused only when the connection is stopped
-//   by a refused password or another gateway, or before any configuration.
+//   they go first, cut a read the gateway leaves silent (or that still
+//   trickles past 1.5 s), cancel the commands of the same target still
+//   waiting, are tried again every 250 ms within 3.3 s, and stay in /data
+//   from the click until a read shows them applied: sent again before any
+//   other request as soon as the gateway answers (no age limit, 3 answered
+//   sends at most). Refused only when the connection is stopped (refused
+//   password, another gateway), the password is invalid, or before any
+//   configuration.
 // - commands (a light on, a dimmer level, a shutter up, down or to a
 //   position): written within 2.5 s or not at all, then read back;
 // - thermostats (a set point, the automatic mode): off by default; the
@@ -50,6 +53,17 @@ const emptyModel = () => ({
   coarse: new Set(),
   advanced: new Set(),
 });
+
+/** The state each protective asks for. */
+const PROTECTIVE_STATE = { lightOff: 'off', shutterStop: 'stopped', zoneOff: 'off' };
+
+/** The read that shows whether a protective kept for later was applied. */
+function readFrameOf(entry) {
+  const id = entry.target.slice(entry.target.indexOf(':') + 1);
+  if (entry.kind === 'lightOff') return FRAMES.lightStatus(id);
+  if (entry.kind === 'shutterStop') return FRAMES.shutterStatus(id);
+  return FRAMES.zoneStatus(Number(id));
+}
 
 /** A strict 0 / 1 (null, '' and the rest are not 0). */
 function binaryOf(value) {
@@ -194,8 +208,15 @@ export class MyHomeApp {
     });
     link.on('refused', (err) => this.onRefused(err));
     link.on('open', () => {
+      // A new command session may reach another gateway: its MAC is read again
+      // before any request that is not a protective.
+      this.identity = 'unknown';
       if (this.pendingWaiting()) this.later(() => this.flushPending(), 0);
     });
+    // The protectives kept for later go before any other request.
+    link.beforeOrdinary = () => {
+      if (this.pendingWaiting() && !this.flushing) this.flushPending();
+    };
     return link;
   }
 
@@ -358,11 +379,11 @@ export class MyHomeApp {
     }
     const refused = this.memory.refused;
     if (refused && passwordMark(next.password, refused.salt) === refused.mark) {
-      this.stopKind = 'refused';
+      this.stopKind = refused.kind === 'identity' ? 'identity' : 'refused';
       this.logger.warn(
-        'OpenWebNet: the gateway refused this password before: no connection until it changes or "Test the connection" is clicked',
+        'OpenWebNet: stopped before with this password (refused, or a gateway that could not prove it): no connection until it changes or "Test the connection" is clicked',
       );
-      await this.setStatus(false, T.refused);
+      await this.setStatus(false, this.stopMessage());
       return;
     }
     this.command.resume();
@@ -477,12 +498,14 @@ export class MyHomeApp {
     this.stopKind = kind;
     this.stopLinks();
     this.logger.error(`OpenWebNet: ${err.message}: connection stopped`);
-    if (err.kind === 'refused') {
+    if (err.kind === 'refused' || err.kind === 'identity') {
+      // A marker of 8 bits, salted, never the password: a restart does not
+      // answer a refusing gateway (or an impostor) with the same password again.
       const salt = this.random(8).toString('hex');
       this.memory.refused = {
         mark: passwordMark(this.config.password, salt),
         salt,
-        kind: 'refused',
+        kind: err.kind,
       };
       this.saveMemory();
     }
@@ -510,11 +533,22 @@ export class MyHomeApp {
     await this.publishTransports();
     if (this.pendingWaiting()) this.flushPending();
     this.scheduleRead(0);
+    // A full read may wait for its gap: the MAC alone (one frame) tells now
+    // that the gateway answers and is ours, and lets the events in.
+    if (this.readTimer && !this.reading) {
+      const identity = await this.readIdentity();
+      if (this.eventUp && !this.reading && (identity === 'ok' || identity === 'unsupported')) {
+        this.readOk = true;
+        await this.refreshStatus();
+      }
+    }
   }
 
   async onEventDown({ reason, retryIn, stopped }) {
     this.eventUp = false;
     this.readOk = false;
+    // The next session may reach another gateway (replaced, new address lease).
+    this.identity = 'unknown';
     if (stopped || this.stopKind) return;
     this.logger.warn(`OpenWebNet event session down (${reason}), next try in ${retryIn} ms`);
     await this.setStatus(false, fill(T.offline, Math.round((retryIn ?? 0) / 1000)));
@@ -524,6 +558,8 @@ export class MyHomeApp {
   // --- Frames -----------------------------------------------------------------------
 
   onFrame(frame, source) {
+    // Nothing taken from a gateway whose MAC was not read on this session.
+    if (source === 'event' && !this.identityOk()) return undefined;
     const message = parse(frame);
     const update = decode(message);
     if (!update) return undefined;
@@ -561,7 +597,7 @@ export class MyHomeApp {
       else if (update.on && !(state.level > 0)) delete state.level;
       state.at = at;
       model.lights.set(point, state);
-      if (source === 'event') this.spontaneous(`light:${point}`);
+      this.observe(`light:${point}`, update.on ? 'on' : 'off', source);
       return `light:${point}`;
     }
     if (update.who === 2) {
@@ -585,7 +621,7 @@ export class MyHomeApp {
         state.positionAt = at;
       }
       model.shutters.set(point, state);
-      if (source === 'event') this.spontaneous(`shutter:${point}`);
+      this.observe(`shutter:${point}`, update.motion, source);
       return `shutter:${point}`;
     }
     if (update.who === 4) {
@@ -610,23 +646,50 @@ export class MyHomeApp {
       }
       if (update.season !== undefined) state.season = update.season;
       model.zones.set(zone, state);
-      if (source === 'event' && update.mode !== undefined) this.spontaneous(`zone:${zone}`);
+      if (update.mode !== undefined) this.observe(`zone:${zone}`, update.mode, source);
       return `zone:${zone}`;
     }
     return undefined;
   }
 
   /**
-   * Something happened to a target on the installation (a button, the app, a
-   * stop reached): a protective kept for later is dropped, the target is not
-   * stopped again behind the back of whoever moved it.
+   * A state of a target with a protective kept for later. The state the
+   * protective asks for (off, stopped), read or reported: applied, dropped.
+   * On the event session, a state other than the one seen at the click (a
+   * new movement, the other way, a light switched on after the off was
+   * seen): someone acted on the installation, the target is never stopped
+   * again behind their back. The same state as at the click (an echo, a
+   * status asked by another client) lifts nothing.
    */
-  spontaneous(target) {
+  observe(target, state, source) {
     const index = this.memory.pending.findIndex((p) => p.target === target);
-    if (index === -1 || this.inProgress.has(target)) return;
+    if (index === -1) return;
+    const entry = this.memory.pending[index];
+    const applied = PROTECTIVE_STATE[entry.kind] === state;
+    // An event equal to the state at the click is an echo: only a read lifts it then.
+    const echo = source === 'event' && entry.state === state;
+    if (applied && !echo) {
+      this.memory.pending.splice(index, 1);
+      this.logger.info(`Protective for ${target} applied (${source})`);
+      this.saveMemory();
+      return;
+    }
+    if (applied || source !== 'event' || this.inProgress.has(target)) return;
+    if (entry.state === undefined || entry.state === state) return;
     this.memory.pending.splice(index, 1);
     this.logger.info(`Protective for ${target} dropped: the device changed on the installation`);
     this.saveMemory();
+  }
+
+  /** The state of a target now (what a protective kept for later compares with). */
+  stateOf(target) {
+    const [kind, id] = target.split(':');
+    if (kind === 'light') {
+      const on = this.model.lights.get(id)?.on;
+      return on === undefined ? undefined : on ? 'on' : 'off';
+    }
+    if (kind === 'shutter') return this.model.shutters.get(id)?.motion;
+    return this.model.zones.get(Number(id))?.mode;
   }
 
   devicesChanged() {
@@ -783,10 +846,31 @@ export class MyHomeApp {
     );
   }
 
-  /** A read request; resolves with its decoded frames, or undefined (no answer, NACK). */
-  async read(frame, { kind = 'read', target, sendBy, timeout } = {}) {
+  identityOk() {
+    return this.identity === 'ok' || this.identity === 'unsupported';
+  }
+
+  /**
+   * A read request; resolves with { frames }, { nack } or { error }. Never
+   * written to a gateway whose MAC was not read on this session (`anyGateway`:
+   * the MAC request itself).
+   */
+  async read(frame, { kind = 'read', target, sendBy, timeout, anyGateway = false } = {}) {
     try {
-      const answer = await this.command.submit({ frame, kind, target, sendBy, timeout });
+      const job = { frame, kind, target, sendBy, timeout };
+      let answer;
+      if (anyGateway) answer = await this.command.submit(job);
+      else {
+        try {
+          answer = await this.command.submit({ ...job, check: () => this.identityOk() });
+        } catch (err) {
+          // A new session: its MAC first, then the read once more.
+          if (err.kind !== 'withdrawn' || this.stopKind) throw err;
+          const identity = await this.readIdentity(sendBy);
+          if (identity !== 'ok' && identity !== 'unsupported') throw err;
+          answer = await this.command.submit({ ...job, check: () => this.identityOk() });
+        }
+      }
       if (!answer.ack) return { nack: true, frames: answer.frames };
       for (const message of answer.frames) {
         const update = decode(message);
@@ -808,7 +892,8 @@ export class MyHomeApp {
       await this.saveMemory();
       if (this.pendingWaiting()) await this.flushPending();
       await this.readIdentity();
-      if (this.stopKind) return;
+      // Nothing read from a gateway that is not known to be ours.
+      if (this.stopKind || !this.identityOk()) return;
       const frames = [FRAMES.allLights, FRAMES.allShutters];
       for (const point of [...this.model.dimmers]) {
         if (this.model.lightPoints.has(point)) frames.push(FRAMES.dimmerLevel(point));
@@ -826,7 +911,7 @@ export class MyHomeApp {
         if (this.stopKind || this.closed) break;
         const result = await this.read(frame);
         results.push(result);
-        // The gateway does not answer: the rest waits for the next cycle.
+        // The gateway does not answer (or its session changed): the rest waits for the next cycle.
         if (result.error && !result.error.sent) break;
       }
       // Connected only on an answer of the gateway (an ACK or a NACK to a status request).
@@ -848,6 +933,7 @@ export class MyHomeApp {
   async readIdentity(sendBy) {
     if (this.identity === 'ok' || this.identity === 'unsupported') return this.identity;
     const result = await this.read(FRAMES.mac, {
+      anyGateway: true,
       kind: sendBy === undefined ? 'read' : 'command',
       sendBy,
       timeout:
@@ -881,7 +967,11 @@ export class MyHomeApp {
     for (const delay of TIMINGS.readBacks) {
       this.later(() => {
         if (this.stopKind) return;
-        this.read(frame, { target }).then(() => this.publishStates());
+        this.read(frame, { target }).then(() => {
+          this.publishStates();
+          // A protective the read still contradicts is sent again (3 answered sends at most).
+          if (this.memory.pending.some((p) => p.target === target)) this.flushPending();
+        });
       }, delay);
     }
   }
@@ -1064,7 +1154,11 @@ export class MyHomeApp {
     if (err?.kind === 'late') return this.refused(T.tooLate);
     if (err?.kind === 'full') return this.refused(T.queueFull);
     if (err?.kind === 'replaced') return this.refused(T.replaced);
-    if (err?.kind === 'withdrawn') return this.refused(T.thermostatDisabled);
+    if (err?.kind === 'withdrawn') {
+      return this.refused(
+        !this.allowed() || this.identityOk() ? T.thermostatDisabled : T.identityUnknown,
+      );
+    }
     if (this.stopKind) return this.refused(T.stopped);
     return this.refused(T.offlineCommand);
   }
@@ -1084,22 +1178,46 @@ export class MyHomeApp {
   }
 
   /** The read back after an ACK: the decoded updates of the target, or undefined. */
-  async readBack(readFrame, target, kind) {
-    const result = await this.read(readFrame, { kind, target, timeout: TIMINGS.readTimeout });
+  async readBack(readFrame, target, kind, timeout = TIMINGS.readTimeout) {
+    const result = await this.read(readFrame, {
+      kind,
+      target,
+      timeout,
+      anyGateway: kind === 'protective',
+    });
     if (result.error || result.nack) return undefined;
     return result.frames.map(decode).filter(Boolean);
   }
 
   checkCommandable() {
     if (!this.configured || !this.config.host) throw this.refused(T.notConfigured);
+    if (this.config.passwordInvalid) throw this.refused(T.badPassword);
     if (this.stopKind) throw this.refused(T.stopped);
   }
 
   async checkIdentity(asked) {
-    if (this.identity === 'ok' || this.identity === 'unsupported') return;
+    if (this.identityOk()) return;
     const identity = await this.readIdentity(asked + TIMINGS.sendBy);
     if (identity !== 'ok' && identity !== 'unsupported') {
       throw this.refused(this.stopKind ? T.stopped : T.identityUnknown);
+    }
+  }
+
+  /**
+   * A request that is not a protective: written only on a session whose MAC
+   * was read (a new session in between: the MAC is read again first, once).
+   */
+  async submitIdentified(job, asked) {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await this.command.submit({
+          ...job,
+          check: () => (job.check ? job.check() : true) && this.identityOk(),
+        });
+      } catch (err) {
+        if (err.kind !== 'withdrawn' || this.identityOk() || attempt > 0) throw err;
+        await this.checkIdentity(asked);
+      }
     }
   }
 
@@ -1112,18 +1230,22 @@ export class MyHomeApp {
     const work = this.serial(target, async () => {
       let answer;
       try {
-        answer = await this.command.submit({
-          frame,
-          kind: 'command',
-          target,
-          sendBy: asked + TIMINGS.sendBy,
-          timeout: Math.max(200, asked + TIMINGS.answerBy - this.monotonic()),
-          onWritten: () => {
-            written = true;
-            this.noteWritten(target);
+        answer = await this.submitIdentified(
+          {
+            frame,
+            kind: 'command',
+            target,
+            sendBy: asked + TIMINGS.sendBy,
+            timeout: Math.max(200, asked + TIMINGS.answerBy - this.monotonic()),
+            onWritten: () => {
+              written = true;
+              this.noteWritten(target);
+            },
           },
-        });
+          asked,
+        );
       } catch (err) {
+        if (err instanceof Refused) throw err;
         if (!err.sent) throw this.notSent(err);
         throw this.unconfirmed(what, target, readFrame);
       }
@@ -1168,73 +1290,144 @@ export class MyHomeApp {
     this.saveMemory();
   }
 
-  dropPending(target, at) {
-    const index = this.memory.pending.findIndex((p) => p.target === target && p.at <= at);
+  dropPending(target) {
+    const index = this.memory.pending.findIndex((p) => p.target === target);
     if (index === -1) return;
     this.memory.pending.splice(index, 1);
     this.saveMemory();
   }
 
+  /** An answered send (ACK or NACK) of a protective kept: the only thing that counts as a try. */
+  countTry(target) {
+    const entry = this.memory.pending.find((p) => p.target === target);
+    if (!entry) return;
+    entry.tries += 1;
+    this.saveMemory();
+  }
+
   /**
    * A protective: first in line, tried again every 250 ms within its budget,
-   * kept in /data (from the click) until it is written.
+   * kept in /data from the click until a read shows it applied. Gladys gets
+   * its answer within 3.3 s whatever the gateway does; the work goes on.
    */
   async protective({ kind, target, frame, readFrame, confirm, contradicted, what, asked }) {
     if (!this.configured || !this.config.host) throw this.refused(T.notConfigured);
+    if (this.config.passwordInvalid) throw this.refused(T.badPassword);
     if (this.stopKind) throw this.refused(T.stopped);
     this.logger.info(`PROTECTIVE from Gladys: ${word(what, 'en')}`);
-    const wall = this.now();
     const token = {};
     this.inProgress.set(target, token);
-    this.keepPending({ kind, target, frame, at: wall, tries: 0 });
+    this.keepPending({
+      kind,
+      target,
+      frame,
+      at: this.now(),
+      tries: 0,
+      state: this.stateOf(target),
+    });
+    const status = { written: false, cause: 'offline' };
+    const work = this.runProtective({
+      target,
+      frame,
+      readFrame,
+      confirm,
+      contradicted,
+      what,
+      asked,
+      status,
+    });
+    work
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.inProgress.get(target) === token) this.inProgress.delete(target);
+      });
+    const outcome = await this.within(
+      work.then(
+        () => ({ ok: true }),
+        (err) => ({ err }),
+      ),
+      asked + TIMINGS.answerBy,
+      { late: true },
+    );
+    if (outcome.ok) return undefined;
+    if (outcome.err) throw outcome.err;
+    if (status.written) {
+      throw new Error(word(fill(T.unconfirmed, word(what, this.language)), this.language));
+    }
+    throw this.keptMessage(what, status.cause);
+  }
+
+  keptMessage(what, cause) {
+    const entry = cause === 'offline' ? T.keptForLater : T.keptBusy;
+    return new Refused(word(fill(entry, word(what, this.language)), this.language));
+  }
+
+  async runProtective({ target, frame, readFrame, confirm, contradicted, what, asked, status }) {
     const until = asked + TIMINGS.protectiveBudget;
     let resent = false;
-    try {
-      for (;;) {
-        let answer;
-        try {
-          answer = await this.command.submit({ frame, kind: 'protective', target, sendBy: until });
-        } catch (err) {
-          if (err.sent) {
-            this.dropPending(target, wall);
-            throw this.unconfirmed(what, target, readFrame);
-          }
-          if (this.stopKind) throw this.refused(T.stopped);
-          if (this.monotonic() + TIMINGS.protectiveRetry > until) break;
-          await this.sleep(TIMINGS.protectiveRetry);
-          continue;
+    for (;;) {
+      let answer;
+      try {
+        answer = await this.command.submit({
+          frame,
+          kind: 'protective',
+          target,
+          sendBy: until,
+          timeout: Math.max(200, Math.min(TIMINGS.readTimeout, until - this.monotonic())),
+          onWritten: () => {
+            status.written = true;
+          },
+        });
+      } catch (err) {
+        if (err.sent) {
+          // Written, no answer: kept (not a try) and sent again later.
+          this.ensurePendingTimer();
+          throw this.unconfirmed(what, target, readFrame);
         }
-        this.dropPending(target, wall);
-        if (!answer.ack) {
-          // NACK: the gateway did not put it on the bus. Again, within the budget.
-          this.logger.warn(`Protective refused by the gateway (${word(what, 'en')})`);
-          if (this.monotonic() + TIMINGS.protectiveRetry > until)
-            throw this.refused(T.gatewayRefused);
-          this.keepPending({ kind, target, frame, at: wall, tries: 0 });
-          await this.sleep(TIMINGS.protectiveRetry);
-          continue;
-        }
-        const updates = await this.readBack(readFrame, target, 'protective');
-        if (updates?.some(confirm)) {
-          this.logger.info(`Protective confirmed (${word(what, 'en')})`);
-          return undefined;
-        }
-        // Contradicted by a read that left after it: sent once more, within the budget.
-        if (!resent && updates?.some(contradicted) && this.monotonic() < until) {
-          resent = true;
-          this.logger.warn(
-            `Protective contradicted by the read back, sent again (${word(what, 'en')})`,
-          );
-          continue;
-        }
-        throw this.unconfirmed(what, target, readFrame);
+        if (this.stopKind) throw this.refused(T.stopped);
+        status.cause = err.kind === 'offline' ? 'offline' : 'busy';
+        if (this.monotonic() + TIMINGS.protectiveRetry > until) break;
+        await this.sleep(TIMINGS.protectiveRetry);
+        continue;
       }
-      this.logger.warn(`Protective NOT sent in time, kept for later (${word(what, 'en')})`);
+      this.countTry(target);
+      if (!answer.ack) {
+        // NACK: the gateway did not put it on the bus. Again, within the budget.
+        this.logger.warn(`Protective refused by the gateway (${word(what, 'en')})`);
+        if (this.monotonic() + TIMINGS.protectiveRetry > until) {
+          this.ensurePendingTimer();
+          throw this.refused(T.gatewayRefused);
+        }
+        await this.sleep(TIMINGS.protectiveRetry);
+        continue;
+      }
+      const left = Math.max(200, until - this.monotonic());
+      const updates = await this.readBack(
+        readFrame,
+        target,
+        'protective',
+        Math.min(TIMINGS.readTimeout, left),
+      );
+      if (updates?.some(confirm)) {
+        this.dropPending(target);
+        this.logger.info(`Protective confirmed (${word(what, 'en')})`);
+        return undefined;
+      }
+      // Contradicted by a read that left after it: sent once more, within the budget.
+      if (!resent && updates?.some(contradicted) && this.monotonic() < until) {
+        resent = true;
+        this.logger.warn(
+          `Protective contradicted by the read back, sent again (${word(what, 'en')})`,
+        );
+        continue;
+      }
+      // Kept until a read shows it applied (the read backs send it again).
       this.ensurePendingTimer();
-      throw new Refused(word(fill(T.keptForLater, word(what, this.language)), this.language));
-    } finally {
-      if (this.inProgress.get(target) === token) this.inProgress.delete(target);
+      throw this.unconfirmed(what, target, readFrame);
     }
+    this.logger.warn(`Protective NOT sent in time, kept for later (${word(what, 'en')})`);
+    this.ensurePendingTimer();
+    throw this.keptMessage(what, status.cause);
   }
 
   ensurePendingTimer() {
@@ -1245,43 +1438,58 @@ export class MyHomeApp {
         this.flushPending();
         this.ensurePendingTimer();
       }
-    }, 30_000);
+    }, TIMINGS.pendingRetry);
   }
 
-  /** The protectives kept for later: sent again (3 times, 10 minutes at most). */
+  /**
+   * The protectives kept for later, sent again before anything else: no age
+   * limit; only an answered send (ACK or NACK) counts, 3 at most; dropped
+   * once a read shows them applied (or the device changed on the installation).
+   */
   async flushPending() {
     if (this.flushing || this.stopKind || !this.config.host || this.closed) return;
+    if (this.config.passwordInvalid) return;
     this.flushing = true;
     try {
-      const wall = this.now();
-      const kept = this.memory.pending.filter(
-        (p) =>
-          wall - p.at <= TIMINGS.protectiveKeep && p.at <= wall && p.tries < LIMITS.protectiveTries,
-      );
-      if (kept.length !== this.memory.pending.length) {
-        this.memory.pending = kept;
-        this.saveMemory();
+      const entries = [];
+      for (const entry of [...this.memory.pending]) {
+        if (this.inProgress.has(entry.target)) continue;
+        if (entry.tries >= LIMITS.protectiveTries) {
+          this.logger.warn(
+            `Protective ${entry.kind} ${entry.target}: answered ${entry.tries} times, never applied; no more sends`,
+          );
+          this.dropPending(entry.target);
+          continue;
+        }
+        entries.push(entry);
       }
-      for (const entry of [...kept]) {
-        if (this.inProgress.has(entry.target) || this.stopKind) continue;
-        if (!this.memory.pending.includes(entry)) continue;
-        entry.tries += 1;
-        this.saveMemory();
-        this.logger.info(
-          `Protective kept for later sent again (${entry.kind} ${entry.target}, try ${entry.tries})`,
-        );
-        try {
-          const answer = await this.command.submit({
+      if (entries.length === 0) return;
+      // Queued all at once, synchronously: they go before any other request.
+      const sends = entries.map((entry) =>
+        this.command
+          .submit({
             frame: entry.frame,
             kind: 'protective',
             target: entry.target,
-            sendBy: this.monotonic() + TIMINGS.protectiveBudget,
+            resend: true,
+            timeout: TIMINGS.readTimeout,
+          })
+          .then(
+            (answer) => ({ entry, answer }),
+            (err) => ({ entry, err }),
+          ),
+      );
+      this.logger.info(`Protectives kept for later sent again (${entries.length})`);
+      for (const { entry, answer, err } of await Promise.all(sends)) {
+        if (err) continue;
+        this.countTry(entry.target);
+        // The read shows whether it was applied (and drops it then).
+        if (answer.ack)
+          await this.read(readFrameOf(entry), {
+            kind: 'protective',
+            target: entry.target,
+            anyGateway: true,
           });
-          if (answer.ack) this.dropPending(entry.target, entry.at);
-        } catch (err) {
-          if (err.sent) this.dropPending(entry.target, entry.at);
-          else break;
-        }
       }
     } finally {
       this.flushing = false;
@@ -1340,19 +1548,26 @@ export class MyHomeApp {
       this.logger.info(`THERMOSTAT from Gladys: ${word(what, 'en')}`);
       let answer;
       try {
-        answer = await this.command.submit({
-          frame,
-          kind: 'command',
-          target,
-          sendBy,
-          timeout: Math.max(200, asked + TIMINGS.answerBy - this.monotonic()),
-          check: () => this.allowed() && !this.stopping(zone),
-          onWritten: () => {
-            written = true;
+        answer = await this.submitIdentified(
+          {
+            frame,
+            kind: 'command',
+            target,
+            sendBy,
+            timeout: Math.max(200, asked + TIMINGS.answerBy - this.monotonic()),
+            check: () => this.allowed() && !this.stopping(zone),
+            onWritten: () => {
+              written = true;
+            },
           },
-        });
+          asked,
+        );
       } catch (err) {
-        if (!err.sent) throw this.notSent(err);
+        if (err instanceof Refused) throw err;
+        if (!err.sent) {
+          if (err.kind === 'withdrawn' && !this.allowed()) throw this.refused(T.thermostatDisabled);
+          throw this.notSent(err);
+        }
         throw this.unconfirmed(what, target, freshFrame);
       }
       if (!answer.ack) throw this.refused(T.gatewayRefused);

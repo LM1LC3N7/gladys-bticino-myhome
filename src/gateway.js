@@ -74,9 +74,17 @@ export class CommandLink extends EventEmitter {
         reject(new OwnError('Too many requests waiting', 'full'));
         return;
       }
-      const entry = { ...job, kind, resolve, reject, generation: this.generation };
-      if (kind === 'protective') {
-        // Nothing of this target asked before the protective leaves after it.
+      const entry = {
+        ...job,
+        kind,
+        resolve,
+        reject,
+        generation: this.generation,
+        queuedAt: this.monotonic(),
+      };
+      if (kind === 'protective' && !job.resend) {
+        // Nothing of this target asked before the protective leaves after it
+        // (a protective sent again later never cancels a newer command).
         this.cancel(job.target, 'replaced');
       }
       queue.push(entry);
@@ -99,6 +107,8 @@ export class CommandLink extends EventEmitter {
 
   next() {
     const now = this.monotonic();
+    // The protectives kept for later go before any other request (the app queues them here).
+    if (this.queues.protective.length === 0) this.beforeOrdinary?.();
     for (const kind of ORDER) {
       const queue = this.queues[kind];
       while (queue.length > 0) {
@@ -237,7 +247,10 @@ export class CommandLink extends EventEmitter {
       const busy = this.current ?? (this.session && !this.session.open ? this.opening : undefined);
       const session = this.session;
       if (!busy || !session || ORDER.indexOf(busy.kind) <= ORDER.indexOf(top)) return;
-      if (this.monotonic() - session.lastByteAt >= TIMINGS.stuckRead) {
+      const now = this.monotonic();
+      // A protective never waits past its budget behind a request that trickles.
+      const waited = top === 'protective' ? now - this.queues.protective[0].queuedAt : 0;
+      if (now - session.lastByteAt >= TIMINGS.stuckRead || waited >= TIMINGS.protectiveCut) {
         this.logger.warn('OpenWebNet: a silent request is cut for a protective command');
         session.destroy();
       }

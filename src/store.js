@@ -8,8 +8,9 @@
 //   - `mac`: the MAC address the gateway gave, to tell another gateway at
 //     the same address;
 //   - `pending`: the protective commands (light off, shutter stop, heating
-//     off) not written yet, sent again when the gateway answers (3 times at
-//     most, 10 minutes at most);
+//     off) not yet seen applied, with the state of the target at the click:
+//     sent again before anything else when the gateway answers, no age limit,
+//     3 answered sends (ACK or NACK) at most;
 //   - `lastReadAt`: when the installation was last read, so a restart never
 //     reads it again sooner than TIMINGS.readGap;
 //   - `dimmers`, `coarse`, `advanced`: what the frames taught about the
@@ -153,6 +154,19 @@ export function memoryStore(initial = null, { broken = false, loading } = {}) {
 }
 
 const PENDING_KINDS = ['lightOff', 'shutterStop', 'zoneOff'];
+/** The state of the target seen at the click (what a later frame is compared with). */
+const STATES = [
+  'on',
+  'off',
+  'up',
+  'down',
+  'stopped',
+  'protection',
+  'auto',
+  'heating',
+  'cooling',
+  'manual',
+];
 
 const pointList = (raw) =>
   Array.isArray(raw)
@@ -172,7 +186,11 @@ export function normalizeMemory(raw, now) {
     raw.refused.mark <= 255 &&
     typeof raw.refused.salt === 'string' &&
     /^[0-9a-f]{16,64}$/.test(raw.refused.salt)
-      ? { mark: raw.refused.mark, salt: raw.refused.salt, kind: String(raw.refused.kind ?? '') }
+      ? {
+          mark: raw.refused.mark,
+          salt: raw.refused.salt,
+          kind: raw.refused.kind === 'identity' ? 'identity' : 'refused',
+        }
       : null;
   const mac =
     typeof raw?.mac === 'string' && /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(raw.mac) ? raw.mac : null;
@@ -191,7 +209,14 @@ export function normalizeMemory(raw, now) {
             p.tries >= 0,
         )
         .slice(0, LIMITS.pendingProtectives)
-        .map((p) => ({ kind: p.kind, target: p.target, frame: p.frame, at: p.at, tries: p.tries }))
+        .map((p) => ({
+          kind: p.kind,
+          target: p.target,
+          frame: p.frame,
+          at: p.at,
+          tries: Math.min(p.tries, 99),
+          ...(STATES.includes(p.state) ? { state: p.state } : {}),
+        }))
     : [];
   return {
     version: 1,

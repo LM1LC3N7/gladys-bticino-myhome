@@ -14,5 +14,6 @@ uses [semantic versioning](https://semver.org/).
 - The OPEN password: legacy numeric, HMAC SHA-1 and SHA-256 with the check of
   the gateway's answer; a refused password is never sent again by itself.
 - Light off, shutter stop and heating off never blocked by an option, first in
-  line, kept in `/data` when the gateway does not answer.
+  line, kept in `/data` from the click until a read shows them applied, sent
+  again before any other request.
 - Set points and the automatic mode off by default, the zone read just before.

@@ -60,8 +60,8 @@ function* texts(node, path = '') {
 function allDevices() {
   const gladys = createFakeGladys({ selector: 'bticino-myhome' });
   const devices = [];
-  for (const language of LANGUAGES) {
-    const config = normalizeConfig({ language, read_only: '14' });
+  for (const [language, plant] of LANGUAGES.flatMap((l) => HEATING_PLANTS.map((p) => [l, p]))) {
+    const config = normalizeConfig({ language, read_only: '14', heating_plant: plant });
     const model = {
       lightPoints: new Set(['11', '13', '14']),
       shutterPoints: new Set(['21', '22']),
@@ -229,7 +229,12 @@ test('the rules of the core on supported_options hold for every published featur
       }
     }
   }
-  assert.ok(seen >= 2, 'the modes of the zones, in both languages');
+  assert.ok(seen >= 4, 'the modes of the zones, in both languages, both plants');
+  const modes = allDevices()
+    .flatMap((d) => d.features)
+    .filter((f) => f.type === 'mode')
+    .map((f) => f.supported_options.map((o) => o.value).join(','));
+  assert.deepEqual([...new Set(modes)].sort(), ['0', '0,3'], 'only off and automatic offered');
 });
 
 test('the units are those of the core for their category', () => {

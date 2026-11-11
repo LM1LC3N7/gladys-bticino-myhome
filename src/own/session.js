@@ -110,7 +110,8 @@ export class OwnSession extends EventEmitter {
                 ? 'No answer during the negotiation'
                 : 'Connection timed out',
               socket && this.connected ? 'timeout' : 'offline',
-              { closedAfterPassword: Boolean(this.passwordSent) },
+              // Silence is never a refusal (only a session closed after the password counts).
+              { closedAfterPassword: false },
             ),
           ),
         TIMINGS.connectTimeout + TIMINGS.negotiation,

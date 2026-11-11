@@ -194,3 +194,88 @@ test('the password never reaches the logs, the status, /data, the devices', asyn
   assert.ok(!everything.includes(SECRET));
   assert.ok(s.logger.lines.length > 0);
 });
+
+test('a gateway silent after the right password is never a refusal: tried again with the waits', async (t) => {
+  const store = memoryStore();
+  const s = await setup({
+    store,
+    config: { ...CONFIG, password: '12345' },
+    gateway: { auth: 'nonce', password: '12345', silentAfterPassword: true },
+  });
+  t.after(() => s.app.stop());
+  await s.clock.advance(3 * 60 * SECOND);
+  assert.equal(s.app.stopKind, undefined);
+  assert.equal(store.data?.refused ?? null, null);
+  assert.doesNotMatch(s.status().message.en, /refused/);
+  const tries = s.gateway.sessions.event;
+  assert.ok(tries >= 3, `${tries} sessions`);
+  s.gateway.silentAfterPassword = false;
+  await s.clock.advance(6 * 60 * SECOND);
+  assert.equal(s.status().connected, true);
+});
+
+test('the event session lost then back on another gateway: no command before its MAC, then stopped', async (t) => {
+  const s = await setup();
+  t.after(() => s.app.stop());
+  // Gateway B answers at the same address from now on.
+  s.gateway.mac = [0, 3, 80, 9, 9, 9];
+  for (const socket of s.gateway.open) socket.destroy();
+  await s.clock.advance(10);
+  assert.equal(s.app.identity, 'unknown');
+  const from = s.gateway.commands.length;
+  const click = await s.click('light', '12', 'binary', 1);
+  const after = s.gateway.commands.slice(from);
+  assert.equal(click.ack?.success, false);
+  assert.ok(!after.includes('*1*1*12##'), after.join(' '));
+  assert.equal(after[0], '*#13**12##');
+  assert.match(s.status().message.en, /Another gateway/);
+});
+
+test('a new command session (idle closed) reads the MAC before a command', async (t) => {
+  const s = await setup();
+  t.after(() => s.app.stop());
+  await s.clock.advance(30 * SECOND); // idle close of the command session
+  s.gateway.mac = [0, 3, 80, 9, 9, 9];
+  const from = s.gateway.commands.length;
+  const click = await s.click('light', '12', 'binary', 1);
+  assert.equal(click.ack?.success, false);
+  assert.ok(!s.gateway.commands.slice(from).includes('*1*1*12##'));
+});
+
+test('event frames are not taken before the MAC of the session is known', async (t) => {
+  const s = await setup();
+  t.after(() => s.app.stop());
+  s.app.identity = 'unknown';
+  s.gateway.push('*1*1*11##');
+  await s.clock.advance(10);
+  assert.equal(s.state('light', '11', 'binary'), 0);
+});
+
+test('a gateway that cannot prove the password: remembered, not answered again after a restart', async (t) => {
+  const store = memoryStore();
+  const s = await setup({
+    store,
+    config: { ...CONFIG, password: SECRET },
+    gateway: { auth: 'sha2', password: SECRET, impostor: true },
+  });
+  await s.app.stop();
+  assert.equal(store.data.refused?.kind, 'identity');
+  const s2 = await setup({
+    store,
+    config: { ...CONFIG, password: SECRET },
+    gateway: { auth: 'sha2', password: SECRET, impostor: true },
+    clock: testClock({ start: Date.UTC(2026, 0, 1) + 60 * SECOND }),
+  });
+  t.after(() => s2.app.stop());
+  assert.equal(s2.gateway.connections, 0);
+  assert.match(s2.status().message.en, /did not prove/);
+});
+
+test('an invalid password in the configuration: a stop is refused at once, never kept', async (t) => {
+  const s = await setup({ config: { ...CONFIG, password: 'mot de passe' } });
+  t.after(() => s.app.stop());
+  const click = await s.click('shutter', '21', 'state', 0, { wait: 100 });
+  assert.equal(click.ack?.success, false);
+  assert.match(click.ack.error.message, /mot de passe OPEN/);
+  assert.equal(s.app.memory.pending.length, 0);
+});

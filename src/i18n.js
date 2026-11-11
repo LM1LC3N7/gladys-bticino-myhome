@@ -117,9 +117,15 @@ export const T = {
   },
   keptForLater: {
     en: (what) =>
-      `${what}: not sent, the gateway does not answer. It is kept and sent as soon as the gateway answers (within 10 minutes).`,
+      `${what}: not sent, the gateway does not answer. It is kept and sent before anything else as soon as the gateway answers.`,
     fr: (what) =>
-      `${what} : non envoyée, la passerelle ne répond pas. Elle est gardée et envoyée dès que la passerelle répond (sous 10 minutes).`,
+      `${what} : non envoyée, la passerelle ne répond pas. Elle est gardée et envoyée avant tout le reste dès que la passerelle répond.`,
+  },
+  keptBusy: {
+    en: (what) =>
+      `${what}: not sent yet, the gateway is busy (a request in progress, or no free session). It is kept and sent before anything else as soon as it can be.`,
+    fr: (what) =>
+      `${what} : pas encore envoyée, la passerelle est occupée (requête en cours, ou plus de session libre). Elle est gardée et envoyée avant tout le reste dès que possible.`,
   },
   readOnly: {
     en: 'This point is read only in the configuration: nothing sent.',
@@ -163,8 +169,8 @@ export const T = {
     fr: 'Non envoyée : le chauffage de cette zone est en cours d’extinction.',
   },
   modeUnsupported: {
-    en: 'Only "Off" and "Automatic" can be chosen here: to heat, set a set point.',
-    fr: 'Seuls « Arrêt » et « Automatique » se choisissent ici : pour chauffer, réglez une consigne.',
+    en: 'Only "Off" and "Automatic (program)" can be chosen here: to heat, set a set point.',
+    fr: 'Seuls « Arrêt » et « Automatique (programme) » se choisissent ici : pour chauffer, réglez une consigne.',
   },
   autoStandalone: {
     en: 'A stand-alone thermostat has no program of a central unit: "Automatic" is not sent.',

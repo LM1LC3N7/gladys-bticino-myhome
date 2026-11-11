@@ -13,6 +13,10 @@
 //   LIMITS.frameBytes bytes; anything else is dropped up to the next `*`;
 // - a value field is read only when it is ASCII digits; out of its published
 //   range (a level over 100, a temperature over 99.9) it is unknown, never 0;
+// - the WHO 4 mode table is read for Gladys: the automatic WHAT (111, 211,
+//   311) and the programs and scenarios (1101..3216) are "auto" (OWNd: heat,
+//   cool, auto by the season digit), 102 / 202 / 302 are "protection" (OWNd:
+//   off), the manual ones heating / cooling / manual by the season digit;
 // - only the frames this integration needs are decoded; a WHO 4 DIMENSION 22
 //   frame (it crashes the thermoregulation daemon of the Linux gateways,
 //   OWNd's destructive_frame_error) is never built.

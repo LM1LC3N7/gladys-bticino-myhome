@@ -40,7 +40,7 @@ export const LIMITS = {
   commandQueue: 32,
   /** Background reads waiting: more are dropped (the next read cycle asks again). */
   readQueue: 600,
-  /** Protectives kept in /data for later, and how many times each is sent again. */
+  /** Protectives kept in /data for later, and how many answered sends each gets at most. */
   pendingProtectives: 64,
   protectiveTries: 3,
   /** States per minute sent to Gladys (the core admits 300). */
@@ -81,8 +81,10 @@ export const TIMINGS = {
   protectiveRetry: 250,
   /** …and this budget, from the click; then it is kept in /data and sent again later. */
   protectiveBudget: 3300,
-  /** A protective kept for later is dropped after this long. */
-  protectiveKeep: 10 * MINUTE,
+  /** A protective waiting this long cuts the request in flight, even one that still trickles. */
+  protectiveCut: 1500,
+  /** The protectives kept for later are sent again this often while the gateway is idle. */
+  pendingRetry: 10 * SECOND,
   /** The fresh read of a zone before a thermostat command, at most. */
   readBefore: 1200,
   /** Reads of a target after a command that was not confirmed. */

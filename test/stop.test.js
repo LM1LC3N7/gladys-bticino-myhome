@@ -40,7 +40,7 @@ test('a stop cancels the commands of the same shutter still waiting', async (t) 
   assert.equal(stop.ack?.success, true, stop.ack?.error?.message);
 });
 
-test('a stop the shutter does not apply is sent once more, then "without confirmation"', async (t) => {
+test('a stop the shutter does not apply: sent once more at once, then by the read backs, 3 answered sends at most', async (t) => {
   const s = await setup();
   t.after(() => s.app.stop());
   await s.click('shutter', '21', 'state', 1);
@@ -49,9 +49,70 @@ test('a stop the shutter does not apply is sent once more, then "without confirm
   assert.equal(s.sent('*2*0*21##'), 2);
   assert.equal(click.ack?.success, false);
   assert.match(click.ack.error.message, /sans confirmation/);
-  // Read back later, never stopped again behind the user.
-  await s.clock.advance(30 * SECOND);
-  assert.equal(s.sent('*2*0*21##'), 2);
+  assert.equal(s.app.memory.pending.length, 1, 'kept until a read shows it applied');
+  await s.clock.advance(MINUTE);
+  assert.equal(s.sent('*2*0*21##'), 3);
+  assert.equal(s.app.memory.pending.length, 0, 'answered 3 times: no more sends');
+  await s.clock.advance(MINUTE);
+  assert.equal(s.sent('*2*0*21##'), 3);
+});
+
+test('a stop applied later is dropped by the read that shows it', async (t) => {
+  const s = await setup();
+  t.after(() => s.app.stop());
+  await s.click('shutter', '21', 'state', 1);
+  s.gateway.ignoreStop = true;
+  await s.click('shutter', '21', 'state', 0);
+  assert.equal(s.app.memory.pending.length, 1);
+  s.gateway.ignoreStop = false;
+  await s.clock.advance(MINUTE);
+  assert.equal(s.app.memory.pending.length, 0);
+  assert.equal(s.gateway.shutters.get('21').motion, 0);
+});
+
+test('a stop written without ACK nor NACK stays kept and is sent again; the ack comes within 3.3 s', async (t) => {
+  const s = await setup();
+  t.after(() => s.app.stop());
+  await s.click('shutter', '21', 'state', 1);
+  s.gateway.silent.add('*2*0*21##');
+  const click = await s.click('shutter', '21', 'state', 0, { wait: 3300 });
+  assert.equal(click.ack?.success, false, 'acked by 3.3 s');
+  assert.match(click.ack.error.message, /sans confirmation/);
+  assert.equal(s.app.memory.pending.length, 1);
+  s.gateway.silent.clear();
+  await s.clock.advance(MINUTE);
+  assert.ok(s.sent('*2*0*21##') >= 2);
+  assert.equal(s.gateway.shutters.get('21').motion, 0);
+  assert.equal(s.app.memory.pending.length, 0);
+});
+
+test('a request that trickles past 1.5 s is cut for a stop: acked within 3.3 s', async (t) => {
+  const s = await setup({ gateway: { latency: 400 } });
+  t.after(() => s.app.stop());
+  // Each frame of the general light status comes 400 ms after the previous one.
+  for (let p = 31; p <= 39; p += 1) s.gateway.lights.set(String(p), { on: false });
+  s.gateway.trickle = 400;
+  s.app.lastFullRead = undefined;
+  s.app.memory.lastReadAt = 0;
+  const reading = s.app.fullRead();
+  for (let i = 0; i < 100 && s.sent('*#1*0##') === 0; i += 1) await s.clock.advance(100);
+  await s.clock.advance(500);
+  const asked = s.clock.elapsed;
+  let writtenAt;
+  const receive = s.gateway.receive;
+  s.gateway.receive = (socket, frame) => {
+    if (frame === '*2*0*21##' && writtenAt === undefined) writtenAt = s.clock.elapsed;
+    return receive(socket, frame);
+  };
+  const click = await s.click('shutter', '21', 'state', 0, { wait: 3300 });
+  assert.equal(click.ack?.success, true, click.ack?.error?.message);
+  assert.ok(
+    writtenAt !== undefined && writtenAt - asked < 2500,
+    `written ${writtenAt - asked} ms after`,
+  );
+  s.gateway.trickle = 0;
+  await s.clock.advance(20 * SECOND);
+  await reading;
 });
 
 test('off, stop and heating off are never blocked by the thermostat option nor the identity', async (t) => {
@@ -122,36 +183,10 @@ test('a stop kept in /data is sent after a restart, before the first read', asyn
   assert.equal(store.data.pending.length, 0);
 });
 
-test('a stop kept for later is dropped by a newer command that left, or a change on the bus', async (t) => {
+test('a stop kept for later is dropped by a newer command that left, or a new movement on the bus', async (t) => {
   const s = await setup();
   t.after(() => s.app.stop());
-  s.app.memory.pending.push({
-    kind: 'shutterStop',
-    target: 'shutter:21',
-    frame: '*2*0*21##',
-    at: s.clock.now(),
-    tries: 0,
-  });
-  s.gateway.quiet = true;
-  await s.click('shutter', '21', 'state', 1);
-  assert.equal(s.app.memory.pending.length, 0, 'the up left: the stop is not sent again');
-  s.gateway.quiet = false;
-  s.app.memory.pending.push({
-    kind: 'shutterStop',
-    target: 'shutter:22',
-    frame: '*2*0*22##',
-    at: s.clock.now(),
-    tries: 0,
-  });
-  s.gateway.push('*2*1*22##');
-  await s.clock.advance(10);
-  assert.equal(s.app.memory.pending.length, 0, 'moved on the bus: never stopped behind the user');
-  assert.equal(s.sent('*2*0*22##'), 0);
-});
-
-test('a stop kept for later: 3 tries and 10 minutes at most', async (t) => {
-  const s = await setup();
-  t.after(() => s.app.stop());
+  // The kept stop is NACKed (sent before the up, kept), then the up leaves: dropped.
   s.gateway.nack.add('*2*0*21##');
   s.app.memory.pending.push({
     kind: 'shutterStop',
@@ -159,23 +194,80 @@ test('a stop kept for later: 3 tries and 10 minutes at most', async (t) => {
     frame: '*2*0*21##',
     at: s.clock.now(),
     tries: 0,
+    state: 'down',
+  });
+  s.gateway.quiet = true;
+  await s.click('shutter', '21', 'state', 1);
+  assert.equal(s.app.memory.pending.length, 0, 'the up left: the stop is not sent again');
+  assert.ok(s.sent('*2*0*21##') >= 1, 'the kept stop went first');
+  s.gateway.quiet = false;
+  s.gateway.nack.clear();
+  s.app.memory.pending.push({
+    kind: 'shutterStop',
+    target: 'shutter:22',
+    frame: '*2*0*22##',
+    at: s.clock.now(),
+    tries: 0,
+    state: 'down',
+  });
+  s.gateway.push('*2*1*22##');
+  await s.clock.advance(10);
+  assert.equal(
+    s.app.memory.pending.length,
+    0,
+    'moved the other way on the bus: never stopped behind the user',
+  );
+  assert.equal(s.sent('*2*0*22##'), 0);
+});
+
+test('an echo of the state seen at the click lifts nothing: the stop leaves when the gateway takes it', async (t) => {
+  const s = await setup();
+  t.after(() => s.app.stop());
+  await s.click('shutter', '21', 'state', 1);
+  s.gateway.silentNegotiation = true;
+  for (const socket of s.gateway.open) if (socket.session === 'command') socket.destroy();
+  await s.clock.advance(10);
+  const click = await s.click('shutter', '21', 'state', 0, { wait: 3300 });
+  assert.equal(click.ack?.success, false);
+  assert.equal(s.app.memory.pending[0]?.state, 'up');
+  s.gateway.push('*2*1*21##');
+  await s.clock.advance(10);
+  assert.equal(s.app.memory.pending.length, 1, 'the same state: kept');
+  s.gateway.silentNegotiation = false;
+  await s.clock.advance(MINUTE);
+  assert.equal(s.sent('*2*0*21##'), 1);
+  assert.equal(s.app.memory.pending.length, 0);
+});
+
+test('a kept stop: only answered sends count (3 at most), no age limit', async (t) => {
+  const s = await setup();
+  t.after(() => s.app.stop());
+  s.gateway.nack.add('*2*0*21##');
+  s.app.memory.pending.push({
+    kind: 'shutterStop',
+    target: 'shutter:21',
+    frame: '*2*0*21##',
+    at: s.clock.now() - 60 * MINUTE,
+    tries: 0,
   });
   for (let i = 0; i < 6; i += 1) {
     await s.app.flushPending();
     await s.clock.advance(10);
   }
-  assert.equal(s.sent('*2*0*21##'), 3);
+  assert.equal(s.sent('*2*0*21##'), 3, 'an hour old, still sent; 3 NACKs, then no more');
+  // The gateway gone: no try counted, never abandoned.
+  s.gateway.nack.clear();
   s.app.memory.pending = [
-    {
-      kind: 'lightOff',
-      target: 'light:12',
-      frame: '*1*0*12##',
-      at: s.clock.now() - 11 * MINUTE,
-      tries: 0,
-    },
+    { kind: 'lightOff', target: 'light:12', frame: '*1*0*12##', at: s.clock.now(), tries: 0 },
   ];
-  await s.app.flushPending();
-  assert.equal(s.sent('*1*0*12##'), 0);
+  s.gateway.offline = true;
+  for (const socket of s.gateway.open) socket.destroy();
+  await s.clock.advance(10 * MINUTE);
+  assert.equal(s.app.memory.pending.length, 1);
+  assert.equal(s.app.memory.pending[0].tries, 0);
+  s.gateway.offline = false;
+  await s.clock.advance(6 * MINUTE);
+  assert.equal(s.sent('*1*0*12##'), 1);
   assert.equal(s.app.memory.pending.length, 0);
 });
 
@@ -200,4 +292,36 @@ test('a scene on 5 slow targets: all 5 set', async (t) => {
   await s.clock.advance(5 * SECOND);
   for (const p of ['11', '14', '15', '16']) assert.equal(s.gateway.lights.get(p).on, true, p);
   assert.equal(s.sent('*2*0*21##'), 1);
+});
+
+test('a stop written without answer while the shutter looked stopped: an echo "stopped" lifts nothing, a read does', async (t) => {
+  const s = await setup();
+  t.after(() => s.app.stop());
+  s.gateway.silent.add('*2*0*21##');
+  await s.click('shutter', '21', 'state', 0, { wait: 3300 });
+  assert.equal(s.app.memory.pending[0]?.state, 'stopped');
+  s.gateway.push('*2*0*21##');
+  await s.clock.advance(10);
+  assert.equal(s.app.memory.pending.length, 1, 'an echo of the state at the click');
+  s.gateway.silent.clear();
+  await s.clock.advance(MINUTE);
+  assert.equal(s.app.memory.pending.length, 0, 'a read showed it stopped');
+});
+
+test('a kept stop goes before any other request as soon as the link is free', async (t) => {
+  const s = await setup();
+  t.after(() => s.app.stop());
+  s.app.memory.pending.push({
+    kind: 'shutterStop',
+    target: 'shutter:21',
+    frame: '*2*0*21##',
+    at: s.clock.now(),
+    tries: 0,
+    state: 'up',
+  });
+  const from = s.gateway.commands.length;
+  await s.click('light', '11', 'binary', 1);
+  const after = s.gateway.commands.slice(from);
+  assert.ok(after.indexOf('*2*0*21##') !== -1, after.join(' '));
+  assert.ok(after.indexOf('*2*0*21##') < after.indexOf('*1*1*11##'), after.join(' '));
 });
