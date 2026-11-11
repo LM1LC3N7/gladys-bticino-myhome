@@ -1328,6 +1328,8 @@ export class MyHomeApp {
   }
 
   keepPending(entry) {
+    // A new click starts afresh: no wait inherited from an older stop of the target.
+    this.dueAt.delete(entry.target);
     const pending = this.memory.pending.filter((p) => p.target !== entry.target);
     pending.push(entry);
     this.memory.pending = pending.slice(-LIMITS.pendingProtectives);

@@ -189,6 +189,12 @@ export default [
   ],
   ['a28 two MAC requests at once', A, '    if (!this.identityReading) {', '    if (true) {'],
   [
+    'a29 a new click inherits the old wait',
+    A,
+    '    this.dueAt.delete(entry.target);\n    const pending',
+    '    const pending',
+  ],
+  [
     'g1 protective does not cancel the waiting commands',
     G,
     "        this.cancel(job.target, 'replaced');",

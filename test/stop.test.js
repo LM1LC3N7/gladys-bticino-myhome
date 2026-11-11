@@ -353,3 +353,27 @@ test('a kept stop goes before any other request as soon as the link is free', as
   assert.ok(after.indexOf('*2*0*21##') !== -1, after.join(' '));
   assert.ok(after.indexOf('*2*0*21##') < after.indexOf('*1*1*11##'), after.join(' '));
 });
+
+test('a new click after an outage leaves as soon as the gateway answers, not after the old wait', async (t) => {
+  const s = await setup();
+  t.after(() => s.app.stop());
+  await s.click('shutter', '21', 'state', 1);
+  s.gateway.nack.add('*2*0*21##');
+  await s.click('shutter', '21', 'state', 0);
+  // NACKed again at growing intervals, until the next wait is long (2 min).
+  const waitLeft = () => (s.app.dueAt.get('shutter:21') ?? 0) - s.clock.monotonic();
+  for (let i = 0; i < 300 && waitLeft() < 90 * SECOND; i += 1) await s.clock.advance(SECOND);
+  assert.ok(waitLeft() >= 90 * SECOND, `old wait ${waitLeft()}`);
+  s.gateway.offline = true;
+  for (const socket of s.gateway.open) socket.destroy();
+  await s.clock.advance(2 * SECOND);
+  const click = await s.click('shutter', '21', 'state', 0, { wait: 3500 });
+  assert.equal(click.ack?.success, false);
+  assert.equal(s.app.memory.pending.length, 1);
+  const sent = s.sent('*2*0*21##');
+  s.gateway.nack.clear();
+  s.gateway.offline = false;
+  await s.clock.advance(12 * SECOND); // the event session back after 10 s
+  assert.ok(s.sent('*2*0*21##') > sent, 'sent again at once');
+  assert.equal(s.gateway.shutters.get('21').motion, 0);
+});
