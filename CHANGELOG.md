@@ -6,6 +6,8 @@ uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-11
+
 ### Added
 
 - BTicino / Legrand MyHOME through an OpenWebNet gateway, on the local network:
@@ -17,3 +19,6 @@ uses [semantic versioning](https://semver.org/).
   line, kept in `/data` from the click until a read shows them applied, sent
   again before any other request.
 - Set points and the automatic mode off by default, the zone read just before.
+
+[Unreleased]: https://github.com/LM1LC3N7/gladys-bticino-myhome/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/LM1LC3N7/gladys-bticino-myhome/releases/tag/v0.1.1

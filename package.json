@@ -1,6 +1,6 @@
 {
   "name": "gladys-bticino-myhome",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Gladys Assistant external integration for BTicino / Legrand MyHOME through an OpenWebNet gateway on the local network (lights, dimmers, shutters, heating zones). Unofficial, not affiliated with BTicino or Legrand.",
   "type": "module",
