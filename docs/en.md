@@ -49,8 +49,9 @@ The id of a device is its OpenWebNet address (`light:12`, `shutter:0215`, `zone:
 `12#4#01`, is `12-4-01`): it never changes.
 
 The changes made on the installation (buttons, app, program) come through the event session of the gateway. The
-whole installation is read again every 10 minutes, never twice within a minute (restart, reconnection and button
-included). A value older than 2 hours is not published any more.
+whole installation is read again every 10 minutes, never twice within a minute (restart and button
+included). A reconnection of the event session reads the MAC address only; the full read keeps its calendar,
+except after a drop of more than 2 minutes (changes missed), when it is done at once. A value older than 2 hours is not published any more.
 
 ## The commands
 
@@ -78,9 +79,11 @@ asked before a stop leaves after it).
 Gladys gets their answer within 3.3 s, whatever the gateway does; the work goes on afterwards. They are **kept
 in `/data` from the click**, with the state of the device at that moment, until a read (or an event) shows the
 device off or stopped. When they cannot leave, they are tried again every 250 ms for 3.3 s, then sent again
-**before any other request** as soon as the gateway answers (after a restart too), with no age limit. Only a
-send the gateway answered (ACK or NACK) counts as a try: after 3 answered sends without effect, they are not sent
-again. A send left unanswered is kept and sent again. A request that makes a protective wait more than 1.5 s is
+**before any other request** as soon as the gateway answers (after a restart too), with no age limit and no cap.
+After a send the gateway answered without effect (NACK, or ACK without the read back showing the device
+stopped), the next one waits 10 s, 30 s, 1 min, 2 min, then 5 min each time: a refusing gateway is never
+flooded. Within the 3.3 s, a NACK waits 1 s before the next send. A send left unanswered is kept and sent
+again. A request that makes a protective wait more than 1.5 s is
 cut, even one that still answers.
 
 A stop kept for later is dropped when a newer command of the same device left, or when the device changes on
@@ -89,16 +92,15 @@ again): it never stops a movement started afterwards by someone else. An echo of
 An off or a stop that the read back contradicts (the light still on, the shutter still moving) is sent once more
 within the 3.3 s, then by the follow-up reads (5 s, 20 s).
 
+When the connection is stopped (password refused, invalid or missing, a gateway that did not prove it knows the
+password, another gateway at this address), they are **kept without sending anything** (never the refused
+password) and go first as soon as the password is fixed or "Test the connection" succeeds.
+
 They are refused only in these cases:
 
 - the integration has no address of the gateway yet;
-- the OPEN password of the configuration holds characters no gateway takes;
-- the connection is stopped: password refused, a gateway that asks for a missing password or only takes digits,
-  a gateway that did not prove it knows the password, another gateway at this address (a refused password is
-  never sent again by itself);
 - the point is read only in the configuration;
-- the value asked is not valid;
-- the gateway answers NACK to every try for 3.3 s (the order stays kept, 3 answered sends at most).
+- the value asked is not valid.
 
 ### Heating
 

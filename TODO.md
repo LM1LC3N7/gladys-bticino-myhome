@@ -11,8 +11,13 @@
   request in flight; the event session apart. Protectives first, a silent
   request cut after 1 s for them (and a silent background read for a command).
 - Protectives kept in /data from the click until a read shows them applied
-  (review r1): no age limit, only answered sends count (3 at most), sent
-  before any other request (CommandLink.beforeOrdinary), ack within 3.3 s.
+  (reviews r1, r2): no age limit, no cap; after an answered send without
+  effect the next waits 10 s, 30 s, 1 min, 2 min, then 5 min; kept (nothing
+  sent) while the connection is stopped; sent before any other request
+  (CommandLink.beforeOrdinary); ack within 3.3 s.
+- Event-session identity apart from the command-session one (review r2): a
+  new command session never hides the wall buttons; a reconnection reads the
+  MAC only (full read at once only after 2 min down).
 - Protectives: light off (and dimmer 0), shutter stop, heating zone off
   (`*4*303*#Z##`, or `*4*303*Z##` for stand-alone thermostats). Not a
   protective: shutter down (no option gates it anyway; never replayed).

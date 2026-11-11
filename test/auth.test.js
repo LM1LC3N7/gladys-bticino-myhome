@@ -245,7 +245,7 @@ test('a new command session (idle closed) reads the MAC before a command', async
 test('event frames are not taken before the MAC of the session is known', async (t) => {
   const s = await setup();
   t.after(() => s.app.stop());
-  s.app.identity = 'unknown';
+  s.app.eventIdentity = 'unknown';
   s.gateway.push('*1*1*11##');
   await s.clock.advance(10);
   assert.equal(s.state('light', '11', 'binary'), 0);
@@ -271,11 +271,95 @@ test('a gateway that cannot prove the password: remembered, not answered again a
   assert.match(s2.status().message.en, /did not prove/);
 });
 
-test('an invalid password in the configuration: a stop is refused at once, never kept', async (t) => {
+test('an invalid password in the configuration: a stop is kept, nothing sent, then sent first once fixed', async (t) => {
   const s = await setup({ config: { ...CONFIG, password: 'mot de passe' } });
   t.after(() => s.app.stop());
   const click = await s.click('shutter', '21', 'state', 0, { wait: 100 });
   assert.equal(click.ack?.success, false);
-  assert.match(click.ack.error.message, /mot de passe OPEN/);
+  assert.match(click.ack.error.message, /gardée/);
+  assert.equal(s.app.memory.pending.length, 1);
+  assert.equal(s.gateway.connections, 0);
+  await s.app.configUpdated({ ...CONFIG });
+  await s.clock.advance(100);
+  await s.clock.advance(100);
+  assert.equal(s.gateway.commands[0], '*2*0*21##');
   assert.equal(s.app.memory.pending.length, 0);
+});
+
+test('a stop clicked while the password is refused: kept, the refused password never sent again, first with the new one', async (t) => {
+  const s = await setup({
+    config: { ...CONFIG, password: SECRET },
+    gateway: { auth: 'sha2', password: 'other' },
+  });
+  t.after(() => s.app.stop());
+  s.gateway.shutters.get('21').motion = 1;
+  const connections = s.gateway.connections;
+  const click = await s.click('shutter', '21', 'state', 0, { wait: 100 });
+  assert.equal(click.ack?.success, false);
+  assert.match(click.ack.error.message, /mot de passe est corrigé/);
+  assert.equal(s.gateway.connections, connections);
+  s.gateway.password = 'other';
+  await s.app.configUpdated({ ...CONFIG, password: 'other' });
+  await s.clock.advance(100);
+  await s.clock.advance(100);
+  assert.equal(s.gateway.commands[0], '*2*0*21##');
+  assert.equal(s.gateway.shutters.get('21').motion, 0);
+});
+
+test('a wall button right after a protective opened a new command session is taken', async (t) => {
+  const s = await setup();
+  t.after(() => s.app.stop());
+  await s.clock.advance(30 * SECOND); // idle close of the command session
+  const click = await s.click('light', '12', 'binary', 0);
+  assert.equal(click.ack?.success, true, click.ack?.error?.message);
+  s.gateway.push('*1*1*11##');
+  await s.clock.advance(10);
+  assert.equal(s.state('light', '11', 'binary'), 1);
+});
+
+test('the MAC unreadable when the events open: tried again within 30 s, events taken then', async (t) => {
+  const s = await setup();
+  t.after(() => s.app.stop());
+  s.gateway.silent.add('*#13**12##');
+  for (const socket of s.gateway.open) if (socket.session === 'event') socket.destroy();
+  await s.clock.advance(11 * SECOND);
+  await s.clock.advance(20 * SECOND);
+  assert.ok(s.sent('*#13**12##') >= 2, 'asked and unanswered');
+  assert.equal(s.app.eventIdentity, 'unknown');
+  s.gateway.silent.clear();
+  await s.clock.advance(40 * SECOND);
+  assert.equal(s.app.eventIdentity, 'ok');
+  s.gateway.push('*1*1*11##');
+  await s.clock.advance(10);
+  assert.equal(s.state('light', '11', 'binary'), 1);
+});
+
+test('two callers of the MAC at once share one request', async (t) => {
+  const s = await setup();
+  t.after(() => s.app.stop());
+  s.app.identity = 'unknown';
+  const before = s.sent('*#13**12##');
+  const both = Promise.all([s.app.readIdentity(), s.app.readIdentity()]);
+  await s.clock.advance(100);
+  await both;
+  assert.equal(s.sent('*#13**12##') - before, 1);
+});
+
+test('a flapping event session: one MAC request per reconnection, the full reads keep their calendar', async (t) => {
+  const s = await setup();
+  t.after(() => s.app.stop());
+  const reads = s.sent('*#1*0##');
+  const macs = s.sent('*#13**12##');
+  let ups = 0;
+  s.app.events.on('up', () => (ups += 1));
+  for (let i = 0; i < 8; i += 1) {
+    for (const socket of s.gateway.open) if (socket.session === 'event') socket.destroy();
+    await s.clock.advance(11 * SECOND);
+  }
+  assert.ok(ups >= 1);
+  assert.equal(s.sent('*#1*0##') - reads, 0, 'no full read for short drops within 10 min');
+  assert.ok(
+    s.sent('*#13**12##') - macs <= ups + 1,
+    `${s.sent('*#13**12##') - macs} MAC for ${ups} ups`,
+  );
 });

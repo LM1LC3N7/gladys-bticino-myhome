@@ -40,9 +40,8 @@ export const LIMITS = {
   commandQueue: 32,
   /** Background reads waiting: more are dropped (the next read cycle asks again). */
   readQueue: 600,
-  /** Protectives kept in /data for later, and how many answered sends each gets at most. */
+  /** Protectives kept in /data for later. */
   pendingProtectives: 64,
-  protectiveTries: 3,
   /** States per minute sent to Gladys (the core admits 300). */
   statesPerMinute: 240,
   /** Part of it only the commanded features (not the temperatures) may use. */
@@ -83,8 +82,20 @@ export const TIMINGS = {
   protectiveBudget: 3300,
   /** A protective waiting this long cuts the request in flight, even one that still trickles. */
   protectiveCut: 1500,
-  /** The protectives kept for later are sent again this often while the gateway is idle. */
+  /** The protectives kept for later are looked at this often while the gateway is idle… */
   pendingRetry: 10 * SECOND,
+  /**
+   * …and one that the gateway answered (NACK, or ACK without effect) is sent
+   * again after these waits, growing, the last one repeating, until a read
+   * shows it applied or the device changes on the installation.
+   */
+  pendingBackoff: [10 * SECOND, 30 * SECOND, MINUTE, 2 * MINUTE, 5 * MINUTE],
+  /** Within its budget, a NACKed protective waits this long before the next send (a NACK costs a MH200N ~2 s). */
+  nackPause: SECOND,
+  /** An event session down this long has missed changes: the full read is done at once when it is back. */
+  missedEvents: 2 * MINUTE,
+  /** A MAC request that failed after the event session opened is tried again this often. */
+  identityRetry: 30 * SECOND,
   /** The fresh read of a zone before a thermostat command, at most. */
   readBefore: 1200,
   /** Reads of a target after a command that was not confirmed. */

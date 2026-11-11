@@ -53,7 +53,9 @@ une interface `12#4#01` devient `12-4-01`) : il ne change jamais.
 
 Les changements faits sur l’installation (boutons, application, programme) arrivent par la session d’événements
 de la passerelle. L’installation est relue entière toutes les 10 minutes, jamais deux fois en moins d’une minute
-(redémarrage, reconnexion et bouton compris). Une valeur de plus de 2 heures n’est plus publiée.
+(redémarrage et bouton compris). Une reconnexion de la session d’événements ne relit que l’adresse MAC ; la
+lecture complète garde son calendrier, sauf après une coupure de plus de 2 minutes (changements manqués), où
+elle est faite tout de suite. Une valeur de plus de 2 heures n’est plus publiée.
 
 ## Les commandes
 
@@ -82,8 +84,10 @@ Gladys reçoit leur réponse dans les 3,3 s, quoi que fasse la passerelle ; le t
 **gardés dans `/data` dès le clic**, avec l’état de l’appareil à ce moment, jusqu’à ce qu’une relecture (ou un
 événement) montre l’appareil éteint ou arrêté. S’ils ne peuvent pas partir, ils sont réessayés toutes les 250 ms
 pendant 3,3 s, puis renvoyés **avant toute autre requête** dès que la passerelle répond (au redémarrage aussi),
-sans limite d’âge. Seul un envoi auquel la passerelle a répondu (ACK ou NACK) compte comme un essai : après 3
-envois répondus sans effet, ils ne sont plus renvoyés. Un envoi resté sans réponse est gardé et renvoyé. Une
+sans limite d’âge ni nombre maximal. Après un envoi auquel la passerelle a répondu sans effet (NACK, ou ACK sans
+que la relecture montre l’appareil arrêté), le suivant attend 10 s, 30 s, 1 min, 2 min puis 5 min à chaque
+fois : une passerelle qui refuse n’est jamais inondée. Pendant les 3,3 s, un NACK fait attendre 1 s avant
+l’envoi suivant. Un envoi resté sans réponse est gardé et renvoyé. Une
 requête qui fait attendre une protectrice plus de 1,5 s est coupée, même si elle répond encore.
 
 Un arrêt gardé est abandonné si une commande plus récente du même appareil est partie, ou si l’appareil change
@@ -92,16 +96,15 @@ rallumée) : il n’arrête jamais un mouvement lancé ensuite par quelqu’un d
 rien. Une extinction ou un arrêt que la relecture contredit (la lumière encore allumée, le volet qui bouge
 encore) est renvoyé une fois dans les 3,3 s, puis par les relectures de suivi (5 s, 20 s).
 
+Quand la connexion est arrêtée (mot de passe refusé, invalide ou absent, passerelle qui n’a pas prouvé connaître
+le mot de passe, autre passerelle à cette adresse), ils sont **gardés sans rien envoyer** (jamais le mot de passe
+refusé) et partent en tête dès que le mot de passe est corrigé ou que « Tester la connexion » réussit.
+
 Ils sont refusés seulement dans ces cas :
 
 - l’intégration n’a pas encore d’adresse de passerelle ;
-- le mot de passe OPEN de la configuration contient des caractères qu’aucune passerelle n’accepte ;
-- la connexion est arrêtée : mot de passe refusé, passerelle qui demande un mot de passe absent ou n’acceptant qu’un
-  mot de passe numérique, passerelle qui n’a pas prouvé connaître le mot de passe, autre passerelle à cette adresse (le
-  mot de passe refusé n’est jamais renvoyé tout seul) ;
 - le point est en lecture seule dans la configuration ;
-- la valeur demandée n’est pas valable ;
-- la passerelle répond NACK à chaque essai pendant 3,3 s (l’ordre reste gardé, 3 envois répondus au plus).
+- la valeur demandée n’est pas valable.
 
 ### Chauffage
 

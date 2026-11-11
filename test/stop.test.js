@@ -40,7 +40,7 @@ test('a stop cancels the commands of the same shutter still waiting', async (t) 
   assert.equal(stop.ack?.success, true, stop.ack?.error?.message);
 });
 
-test('a stop the shutter does not apply: sent once more at once, then by the read backs, 3 answered sends at most', async (t) => {
+test('a stop the shutter does not apply: sent once more at once, then again at growing intervals until applied', async (t) => {
   const s = await setup();
   t.after(() => s.app.stop());
   await s.click('shutter', '21', 'state', 1);
@@ -50,11 +50,32 @@ test('a stop the shutter does not apply: sent once more at once, then by the rea
   assert.equal(click.ack?.success, false);
   assert.match(click.ack.error.message, /sans confirmation/);
   assert.equal(s.app.memory.pending.length, 1, 'kept until a read shows it applied');
-  await s.clock.advance(MINUTE);
-  assert.equal(s.sent('*2*0*21##'), 3);
-  assert.equal(s.app.memory.pending.length, 0, 'answered 3 times: no more sends');
-  await s.clock.advance(MINUTE);
-  assert.equal(s.sent('*2*0*21##'), 3);
+  await s.clock.advance(5 * MINUTE);
+  const sent = s.sent('*2*0*21##');
+  assert.ok(sent >= 4 && sent <= 8, `${sent} sends in 5 min: spaced, never given up`);
+  assert.equal(s.app.memory.pending.length, 1);
+  s.gateway.ignoreStop = false;
+  await s.clock.advance(6 * MINUTE);
+  assert.equal(s.gateway.shutters.get('21').motion, 0);
+  assert.equal(s.app.memory.pending.length, 0);
+});
+
+test('NACKed for 4 s (past the budget), then accepted: sent again later and applied', async (t) => {
+  const s = await setup();
+  t.after(() => s.app.stop());
+  await s.click('shutter', '21', 'state', 1);
+  s.gateway.nack.add('*2*0*21##');
+  const click = await s.click('shutter', '21', 'state', 0, { wait: 3300 });
+  assert.equal(click.ack?.success, false);
+  assert.ok(
+    s.sent('*2*0*21##') <= 4,
+    `${s.sent('*2*0*21##')} sends in the budget: paused after a NACK`,
+  );
+  await s.clock.advance(700);
+  s.gateway.nack.clear();
+  await s.clock.advance(30 * SECOND);
+  assert.equal(s.gateway.shutters.get('21').motion, 0);
+  assert.equal(s.app.memory.pending.length, 0);
 });
 
 test('a stop applied later is dropped by the read that shows it', async (t) => {
@@ -239,7 +260,7 @@ test('an echo of the state seen at the click lifts nothing: the stop leaves when
   assert.equal(s.app.memory.pending.length, 0);
 });
 
-test('a kept stop: only answered sends count (3 at most), no age limit', async (t) => {
+test('a kept stop NACKed: never given up, sent again at growing intervals; no age limit', async (t) => {
   const s = await setup();
   t.after(() => s.app.stop());
   s.gateway.nack.add('*2*0*21##');
@@ -250,13 +271,20 @@ test('a kept stop: only answered sends count (3 at most), no age limit', async (
     at: s.clock.now() - 60 * MINUTE,
     tries: 0,
   });
-  for (let i = 0; i < 6; i += 1) {
-    await s.app.flushPending();
-    await s.clock.advance(10);
-  }
-  assert.equal(s.sent('*2*0*21##'), 3, 'an hour old, still sent; 3 NACKs, then no more');
-  // The gateway gone: no try counted, never abandoned.
+  await s.app.flushPending();
+  await s.clock.advance(10);
+  assert.equal(s.sent('*2*0*21##'), 1, 'an hour old, still sent');
+  await s.app.flushPending();
+  await s.clock.advance(5 * SECOND);
+  assert.equal(s.sent('*2*0*21##'), 1, 'not again before 10 s');
+  await s.clock.advance(4 * MINUTE);
+  const sent = s.sent('*2*0*21##');
+  assert.ok(sent >= 3 && sent <= 6, `${sent} sends in 4 min`);
+  assert.equal(s.app.memory.pending.length, 1);
   s.gateway.nack.clear();
+  await s.clock.advance(6 * MINUTE);
+  assert.equal(s.app.memory.pending.length, 0);
+  // The gateway gone: no try counted, never abandoned.
   s.app.memory.pending = [
     { kind: 'lightOff', target: 'light:12', frame: '*1*0*12##', at: s.clock.now(), tries: 0 },
   ];

@@ -11,10 +11,11 @@
 //   trickles past 1.5 s), cancel the commands of the same target still
 //   waiting, are tried again every 250 ms within 3.3 s, and stay in /data
 //   from the click until a read shows them applied: sent again before any
-//   other request as soon as the gateway answers (no age limit, 3 answered
-//   sends at most). Refused only when the connection is stopped (refused
-//   password, another gateway), the password is invalid, or before any
-//   configuration.
+//   other request as soon as the gateway answers (no age limit, no cap,
+//   growing waits after an answered send without effect). Kept without any
+//   send while the connection is stopped (refused or invalid password,
+//   another gateway); refused only before any configuration, on a point
+//   read only, or a wrong value.
 // - commands (a light on, a dimmer level, a shutter up, down or to a
 //   position): written within 2.5 s or not at all, then read back;
 // - thermostats (a set point, the automatic mode): off by default; the
@@ -55,6 +56,8 @@ const emptyModel = () => ({
 });
 
 /** The state each protective asks for. */
+const EVENT_OK = new Set(['ok', 'unsupported']);
+
 const PROTECTIVE_STATE = { lightOff: 'off', shutterStop: 'stopped', zoneOff: 'off' };
 
 /** The read that shows whether a protective kept for later was applied. */
@@ -117,8 +120,11 @@ export class MyHomeApp {
     this.chains = new Map();
     this.timersSet = new Set();
     this.inProgress = new Map();
+    /** target -> monotonic time before which a protective kept is not sent again. */
+    this.dueAt = new Map();
     this.eventUp = false;
     this.identity = 'unknown';
+    this.eventIdentity = 'unknown';
     this.stopKind = undefined;
     this.started = false;
     this.starting = Promise.resolve();
@@ -360,6 +366,7 @@ export class MyHomeApp {
     this.key = sessionKey(next);
     this.stopKind = undefined;
     this.identity = 'unknown';
+    this.eventIdentity = 'unknown';
     this.closed = false;
     if (next.errors.length > 0) {
       this.logger.warn(`${next.errors.length} configuration entries not understood (ignored)`);
@@ -448,6 +455,7 @@ export class MyHomeApp {
     this.command.stop();
     this.eventUp = false;
     this.identity = 'unknown';
+    this.eventIdentity = 'unknown';
     this.readOk = false;
     if (this.readTimer) {
       this.timers.clearTimeout(this.readTimer);
@@ -524,6 +532,7 @@ export class MyHomeApp {
     this.eventUp = true;
     this.everOpen = true;
     this.identity = 'unknown';
+    this.eventIdentity = 'unknown';
     if (this.memory.refused) {
       this.memory.refused = null;
       this.saveMemory();
@@ -532,23 +541,43 @@ export class MyHomeApp {
     await this.setStatus(false, T.reading);
     await this.publishTransports();
     if (this.pendingWaiting()) this.flushPending();
-    this.scheduleRead(0);
-    // A full read may wait for its gap: the MAC alone (one frame) tells now
-    // that the gateway answers and is ours, and lets the events in.
-    if (this.readTimer && !this.reading) {
-      const identity = await this.readIdentity();
-      if (this.eventUp && !this.reading && (identity === 'ok' || identity === 'unsupported')) {
+    // A reconnection keeps the calendar of the full reads, unless the event
+    // session was down long enough to have missed changes (or never read).
+    const mono = this.monotonic();
+    const away = this.downSince === undefined ? 0 : mono - this.downSince;
+    this.downSince = undefined;
+    if (this.lastFullRead === undefined || away >= TIMINGS.missedEvents) this.scheduleRead(0);
+    else this.scheduleRead(Math.max(0, this.lastFullRead + TIMINGS.fullRead - mono));
+    // The MAC alone (one frame) tells now that the gateway answers and is
+    // ours, and lets the events in; tried again every 30 s until it answers.
+    if (!this.reading) await this.checkEventIdentity();
+  }
+
+  async checkEventIdentity() {
+    if (!this.eventUp || this.stopKind || this.closed) return;
+    const identity = await this.readIdentity();
+    if (!this.eventUp || this.stopKind) return;
+    if (identity === 'ok' || identity === 'unsupported') {
+      if (!this.reading) {
         this.readOk = true;
         await this.refreshStatus();
       }
+      return;
     }
+    if (this.identityTimer) return;
+    this.identityTimer = this.later(() => {
+      this.identityTimer = undefined;
+      if (this.eventIdentity === 'unknown') this.checkEventIdentity();
+    }, TIMINGS.identityRetry);
   }
 
   async onEventDown({ reason, retryIn, stopped }) {
+    if (this.eventUp && this.downSince === undefined) this.downSince = this.monotonic();
     this.eventUp = false;
     this.readOk = false;
     // The next session may reach another gateway (replaced, new address lease).
     this.identity = 'unknown';
+    this.eventIdentity = 'unknown';
     if (stopped || this.stopKind) return;
     this.logger.warn(`OpenWebNet event session down (${reason}), next try in ${retryIn} ms`);
     await this.setStatus(false, fill(T.offline, Math.round((retryIn ?? 0) / 1000)));
@@ -558,8 +587,9 @@ export class MyHomeApp {
   // --- Frames -----------------------------------------------------------------------
 
   onFrame(frame, source) {
-    // Nothing taken from a gateway whose MAC was not read on this session.
-    if (source === 'event' && !this.identityOk()) return undefined;
+    // Nothing taken from the event session before its gateway's MAC was read
+    // (a new command session does not change that: it has its own check).
+    if (source === 'event' && !EVENT_OK.has(this.eventIdentity)) return undefined;
     const message = parse(frame);
     const update = decode(message);
     if (!update) return undefined;
@@ -930,8 +960,20 @@ export class MyHomeApp {
   }
 
   /** The MAC of the gateway, once per event session: another gateway at the address stops everything. */
-  async readIdentity(sendBy) {
-    if (this.identity === 'ok' || this.identity === 'unsupported') return this.identity;
+  readIdentity(sendBy) {
+    if (this.identity === 'ok' || this.identity === 'unsupported')
+      return Promise.resolve(this.identity);
+    // One MAC request at a time: the callers share it.
+    if (!this.identityReading) {
+      this.identityReading = this.readIdentityNow(sendBy).finally(() => {
+        this.identityReading = undefined;
+      });
+    }
+    return this.identityReading;
+  }
+
+  async readIdentityNow(sendBy) {
+    const eventSession = this.eventUp;
     const result = await this.read(FRAMES.mac, {
       anyGateway: true,
       kind: sendBy === undefined ? 'read' : 'command',
@@ -954,9 +996,11 @@ export class MyHomeApp {
         this.saveMemory();
       }
       this.identity = 'ok';
+      if (eventSession && this.eventUp) this.eventIdentity = 'ok';
     } else if (result.nack && !this.memory.mac) {
       // A gateway that does not give its MAC: nothing to compare.
       this.identity = 'unsupported';
+      if (eventSession && this.eventUp) this.eventIdentity = 'unsupported';
     } else {
       this.identity = 'unknown';
     }
@@ -969,7 +1013,7 @@ export class MyHomeApp {
         if (this.stopKind) return;
         this.read(frame, { target }).then(() => {
           this.publishStates();
-          // A protective the read still contradicts is sent again (3 answered sends at most).
+          // A protective the read still contradicts is sent again (its waits apply).
           if (this.memory.pending.some((p) => p.target === target)) this.flushPending();
         });
       }, delay);
@@ -1291,17 +1335,25 @@ export class MyHomeApp {
   }
 
   dropPending(target) {
+    this.dueAt.delete(target);
     const index = this.memory.pending.findIndex((p) => p.target === target);
     if (index === -1) return;
     this.memory.pending.splice(index, 1);
     this.saveMemory();
   }
 
-  /** An answered send (ACK or NACK) of a protective kept: the only thing that counts as a try. */
+  /**
+   * An answered send (ACK or NACK) of a protective kept, not yet applied: the
+   * next one waits 10 s, 30 s, 1 min, 2 min, then 5 min (a gateway that NACKs
+   * is never flooded, and a stop is never given up while the device has not
+   * changed).
+   */
   countTry(target) {
     const entry = this.memory.pending.find((p) => p.target === target);
     if (!entry) return;
     entry.tries += 1;
+    const waits = TIMINGS.pendingBackoff;
+    this.dueAt.set(target, this.monotonic() + waits[Math.min(entry.tries - 1, waits.length - 1)]);
     this.saveMemory();
   }
 
@@ -1312,8 +1364,20 @@ export class MyHomeApp {
    */
   async protective({ kind, target, frame, readFrame, confirm, contradicted, what, asked }) {
     if (!this.configured || !this.config.host) throw this.refused(T.notConfigured);
-    if (this.config.passwordInvalid) throw this.refused(T.badPassword);
-    if (this.stopKind) throw this.refused(T.stopped);
+    if (this.config.passwordInvalid || this.stopKind) {
+      // Kept, nothing on the network (never the refused password): it goes
+      // first once the password is fixed or "Test the connection" succeeds.
+      this.logger.warn(`PROTECTIVE kept while the connection is stopped: ${word(what, 'en')}`);
+      this.keepPending({
+        kind,
+        target,
+        frame,
+        at: this.now(),
+        tries: 0,
+        state: this.stateOf(target),
+      });
+      throw new Refused(word(fill(T.keptStopped, word(what, this.language)), this.language));
+    }
     this.logger.info(`PROTECTIVE from Gladys: ${word(what, 'en')}`);
     const token = {};
     this.inProgress.set(target, token);
@@ -1365,6 +1429,8 @@ export class MyHomeApp {
   async runProtective({ target, frame, readFrame, confirm, contradicted, what, asked, status }) {
     const until = asked + TIMINGS.protectiveBudget;
     let resent = false;
+    // The whole budget is one try at most: the sends after it keep their spacing.
+    let counted = false;
     for (;;) {
       let answer;
       try {
@@ -1384,21 +1450,26 @@ export class MyHomeApp {
           this.ensurePendingTimer();
           throw this.unconfirmed(what, target, readFrame);
         }
-        if (this.stopKind) throw this.refused(T.stopped);
+        if (this.stopKind) {
+          throw new Refused(word(fill(T.keptStopped, word(what, this.language)), this.language));
+        }
         status.cause = err.kind === 'offline' ? 'offline' : 'busy';
         if (this.monotonic() + TIMINGS.protectiveRetry > until) break;
         await this.sleep(TIMINGS.protectiveRetry);
         continue;
       }
-      this.countTry(target);
+      if (!counted) {
+        counted = true;
+        this.countTry(target);
+      }
       if (!answer.ack) {
-        // NACK: the gateway did not put it on the bus. Again, within the budget.
+        // NACK: the gateway did not put it on the bus. Again after a pause, within the budget.
         this.logger.warn(`Protective refused by the gateway (${word(what, 'en')})`);
-        if (this.monotonic() + TIMINGS.protectiveRetry > until) {
+        if (this.monotonic() + TIMINGS.nackPause > until) {
           this.ensurePendingTimer();
-          throw this.refused(T.gatewayRefused);
+          throw this.refused(T.gatewayRefusedKept);
         }
-        await this.sleep(TIMINGS.protectiveRetry);
+        await this.sleep(TIMINGS.nackPause);
         continue;
       }
       const left = Math.max(200, until - this.monotonic());
@@ -1443,8 +1514,9 @@ export class MyHomeApp {
 
   /**
    * The protectives kept for later, sent again before anything else: no age
-   * limit; only an answered send (ACK or NACK) counts, 3 at most; dropped
-   * once a read shows them applied (or the device changed on the installation).
+   * limit, no cap; after an answered send (ACK or NACK) the next one waits
+   * (countTry); dropped once a read shows them applied, a newer command of
+   * the target left, or the device changed on the installation.
    */
   async flushPending() {
     if (this.flushing || this.stopKind || !this.config.host || this.closed) return;
@@ -1454,13 +1526,7 @@ export class MyHomeApp {
       const entries = [];
       for (const entry of [...this.memory.pending]) {
         if (this.inProgress.has(entry.target)) continue;
-        if (entry.tries >= LIMITS.protectiveTries) {
-          this.logger.warn(
-            `Protective ${entry.kind} ${entry.target}: answered ${entry.tries} times, never applied; no more sends`,
-          );
-          this.dropPending(entry.target);
-          continue;
-        }
+        if ((this.dueAt.get(entry.target) ?? -Infinity) > this.monotonic()) continue;
         entries.push(entry);
       }
       if (entries.length === 0) return;
@@ -1493,6 +1559,7 @@ export class MyHomeApp {
       }
     } finally {
       this.flushing = false;
+      if (this.pendingWaiting() && !this.closed) this.ensurePendingTimer();
     }
   }
 

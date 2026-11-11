@@ -10,7 +10,7 @@
 //   - `pending`: the protective commands (light off, shutter stop, heating
 //     off) not yet seen applied, with the state of the target at the click:
 //     sent again before anything else when the gateway answers, no age limit,
-//     3 answered sends (ACK or NACK) at most;
+//     no cap, growing waits after an answered send without effect;
 //   - `lastReadAt`: when the installation was last read, so a restart never
 //     reads it again sooner than TIMINGS.readGap;
 //   - `dimmers`, `coarse`, `advanced`: what the frames taught about the

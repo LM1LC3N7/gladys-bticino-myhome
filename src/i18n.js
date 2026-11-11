@@ -127,6 +127,16 @@ export const T = {
     fr: (what) =>
       `${what} : pas encore envoyée, la passerelle est occupée (requête en cours, ou plus de session libre). Elle est gardée et envoyée avant tout le reste dès que possible.`,
   },
+  keptStopped: {
+    en: (what) =>
+      `${what}: not sent, the connection is stopped (see the status). It is kept and sent before anything else once the password is fixed or "Test the connection" succeeds.`,
+    fr: (what) =>
+      `${what} : non envoyée, la connexion est arrêtée (voir l’état). Elle est gardée et envoyée avant tout le reste dès que le mot de passe est corrigé ou que « Tester la connexion » réussit.`,
+  },
+  gatewayRefusedKept: {
+    en: 'The gateway refused it (NACK): nothing done for now. It is kept and sent again after 10 s, 30 s, 1 min, 2 min, then every 5 min until it is applied.',
+    fr: 'La passerelle l’a refusée (NACK) : rien n’est fait pour l’instant. Elle est gardée et renvoyée après 10 s, 30 s, 1 min, 2 min puis toutes les 5 min jusqu’à ce qu’elle soit appliquée.',
+  },
   readOnly: {
     en: 'This point is read only in the configuration: nothing sent.',
     fr: 'Ce point est en lecture seule dans la configuration : rien n’est envoyé.',
